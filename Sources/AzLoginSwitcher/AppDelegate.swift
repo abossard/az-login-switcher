@@ -18,10 +18,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             button.target = self
         }
         
+        let shell = ShellExecutor()
+        let azCLI = AzCLI(shell: shell)
+        let pimService = PIMService(shell: shell)
+        let urlOpener = DefaultURLOpener()
+        let loginLauncher = TerminalLoginLauncher()
+        
+        let appState = AppState(
+            azCLI: azCLI,
+            pimService: pimService,
+            urlOpener: urlOpener,
+            loginLauncher: loginLauncher
+        )
+        
         popover = NSPopover()
         popover.behavior = .transient
         popover.contentSize = NSSize(width: 350, height: 400)
-        popover.contentViewController = NSHostingController(rootView: Text("Az Login Switcher - Loading..."))
+        popover.contentViewController = NSHostingController(rootView: MainView(appState: appState))
     }
     
     @objc func togglePopover(_ sender: AnyObject?) {
