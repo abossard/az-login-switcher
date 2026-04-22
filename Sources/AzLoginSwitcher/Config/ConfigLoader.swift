@@ -54,9 +54,7 @@ public struct ConfigLoader {
                 return .failure(.validationError("Tenant at index \(index) (\(tenant.name)) has empty tenantId"))
             }
             
-            if tenant.subscriptions.isEmpty {
-                return .failure(.validationError("Tenant '\(tenant.name)' must have at least one subscription"))
-            }
+            // Subscriptions are optional — can be discovered dynamically after login
         }
         
         return .success(config)

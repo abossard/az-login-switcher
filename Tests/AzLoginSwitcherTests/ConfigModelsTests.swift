@@ -191,17 +191,11 @@ final class ConfigModelsTests: XCTestCase {
         let config = try decoder.decode(AppConfig.self, from: yaml)
         let result = ConfigLoader.validate(config: config)
         
-        guard case .failure(let error) = result else {
-            XCTFail("Expected validation error for empty subscriptions")
+        // Empty subscriptions are now allowed — discovered dynamically after login
+        guard case .success = result else {
+            XCTFail("Empty subscriptions should be valid")
             return
         }
-        
-        guard case .validationError(let message) = error else {
-            XCTFail("Expected validationError, got \(error)")
-            return
-        }
-        
-        XCTAssertTrue(message.contains("subscription"), "Error message should mention subscriptions: \(message)")
     }
     
     func testValidationEmptyTenantId() throws {
