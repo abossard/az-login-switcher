@@ -1,7 +1,7 @@
 import Foundation
 
 public struct AppConfig: Codable, Equatable, Sendable {
-    public let tenants: [TenantConfig]
+    public var tenants: [TenantConfig]
     
     public init(tenants: [TenantConfig]) {
         self.tenants = tenants
@@ -11,14 +11,16 @@ public struct AppConfig: Codable, Equatable, Sendable {
 public struct TenantConfig: Codable, Equatable, Sendable {
     public let name: String
     public let tenantId: String
-    public let subscriptions: [SubscriptionConfig]
+    public var subscriptions: [SubscriptionConfig]
     public let pim: PIMConfig?
+    public var subscriptionFilter: String?
     
-    public init(name: String, tenantId: String, subscriptions: [SubscriptionConfig], pim: PIMConfig? = nil) {
+    public init(name: String, tenantId: String, subscriptions: [SubscriptionConfig], pim: PIMConfig? = nil, subscriptionFilter: String? = nil) {
         self.name = name
         self.tenantId = tenantId
         self.subscriptions = subscriptions
         self.pim = pim
+        self.subscriptionFilter = subscriptionFilter
     }
 }
 

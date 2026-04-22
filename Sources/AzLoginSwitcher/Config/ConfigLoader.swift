@@ -43,6 +43,17 @@ public struct ConfigLoader {
         }
     }
     
+    public static func saveConfig(_ config: AppConfig, to path: String? = nil) {
+        let expandedPath = ((path ?? defaultConfigPath()) as NSString).expandingTildeInPath
+        do {
+            let encoder = YAMLEncoder()
+            let yamlString = try encoder.encode(config)
+            try yamlString.write(toFile: expandedPath, atomically: true, encoding: .utf8)
+        } catch {
+            // Best-effort save — don't crash
+        }
+    }
+    
     public static func defaultConfigPath() -> String {
         let homeDir = FileManager.default.homeDirectoryForCurrentUser
         return homeDir.appendingPathComponent(".az-login-switcher.yaml").path

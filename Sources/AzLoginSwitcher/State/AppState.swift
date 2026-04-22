@@ -55,6 +55,18 @@ final class AppState {
         }
     }
 
+    /// One-click: login to tenant + select a specific subscription
+    func loginAndSelectSubscription(_ subscription: SubscriptionConfig, tenant: TenantConfig, useTerminal: Bool = false) async {
+        // Login first if not already logged in
+        let currentStatus = tenantSessions[tenant.tenantId]?.loginStatus
+        if currentStatus != .loggedIn {
+            await loginToTenant(tenant, useTerminal: useTerminal)
+            guard tenantSessions[tenant.tenantId]?.loginStatus == .loggedIn else { return }
+        }
+        // Then select the subscription
+        await setActiveSubscription(subscription, tenantId: tenant.tenantId)
+    }
+
     func loginToTenant(_ tenant: TenantConfig, useTerminal: Bool = false) async {
         if tenantSessions[tenant.tenantId]?.loginStatus == .loggingIn {
             return
@@ -80,8 +92,17 @@ final class AppState {
             try await azCLI.login(tenantId: tenant.tenantId)
             tenantSessions[tenant.tenantId]!.loginStatus = .loggedIn
 
+            // Auto-discover subscriptions if filter is set and no subscriptions configured
+            var activeTenant = tenant
+            if let filter = tenant.subscriptionFilter, !filter.isEmpty {
+                let discovered = await discoverSubscriptions(tenantId: tenant.tenantId, filter: filter)
+                if !discovered.isEmpty {
+                    activeTenant = updateTenantSubscriptions(tenant: tenant, discovered: discovered)
+                }
+            }
+
             // Auto-select first subscription
-            if let firstSub = tenant.subscriptions.first {
+            if let firstSub = activeTenant.subscriptions.first {
                 try await azCLI.setSubscription(id: firstSub.id)
                 tenantSessions[tenant.tenantId]!.activeSubscription = AzSubscription(
                     id: firstSub.id,
@@ -100,7 +121,7 @@ final class AppState {
 
             // Discover PIM roles for each subscription
             var allRoles: [PIMEligibleRole] = []
-            for sub in tenant.subscriptions {
+            for sub in activeTenant.subscriptions {
                 do {
                     let roles = try await pimService.discoverEligibleRoles(subscriptionId: sub.id)
                     allRoles.append(contentsOf: roles)
@@ -194,5 +215,46 @@ final class AppState {
             return nil
         }
         return String(components[index + 1])
+    }
+
+    /// Discover subscriptions via `az account list`, filter by name prefix
+    private func discoverSubscriptions(tenantId: String, filter: String) async -> [SubscriptionConfig] {
+        do {
+            let allSubs = try await azCLI.listSubscriptions()
+            let matching = allSubs
+                .filter { $0.tenantId == tenantId && $0.name.localizedCaseInsensitiveContains(filter) }
+                .map { SubscriptionConfig(name: $0.name, id: $0.id) }
+            return matching
+        } catch {
+            return []
+        }
+    }
+
+    /// Merge discovered subscriptions into tenant config and save back to YAML
+    private func updateTenantSubscriptions(tenant: TenantConfig, discovered: [SubscriptionConfig]) -> TenantConfig {
+        guard var currentConfig = config else { return tenant }
+
+        // Merge: keep existing, add new discoveries
+        var existingIds = Set(tenant.subscriptions.map(\.id))
+        var merged = tenant.subscriptions
+        for sub in discovered {
+            if !existingIds.contains(sub.id) {
+                merged.append(sub)
+                existingIds.insert(sub.id)
+            }
+        }
+
+        var updatedTenant = tenant
+        updatedTenant.subscriptions = merged
+
+        // Update config in memory
+        if let idx = currentConfig.tenants.firstIndex(where: { $0.tenantId == tenant.tenantId }) {
+            currentConfig.tenants[idx] = updatedTenant
+            config = currentConfig
+            // Persist to disk
+            ConfigLoader.saveConfig(currentConfig)
+        }
+
+        return updatedTenant
     }
 }

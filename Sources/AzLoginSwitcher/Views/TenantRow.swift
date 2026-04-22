@@ -22,6 +22,12 @@ struct TenantRow: View {
         VStack(alignment: .leading, spacing: 6) {
             headerRow
             errorRow
+
+            // Show subscriptions directly for one-click login+select
+            if !tenant.subscriptions.isEmpty {
+                subscriptionQuickPick
+            }
+
             if isExpanded && session.loginStatus == .loggedIn {
                 expandedContent
             }
@@ -72,8 +78,38 @@ struct TenantRow: View {
                 Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
             }
             .buttonStyle(.borderless)
-            .disabled(session.loginStatus != .loggedIn)
         }
+    }
+
+    /// Quick-pick subscriptions — click to login + select in one action
+    private var subscriptionQuickPick: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(tenant.subscriptions, id: \.id) { sub in
+                let isActive = session.activeSubscription?.id == sub.id
+                Button {
+                    Task { await appState.loginAndSelectSubscription(sub, tenant: tenant) }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: isActive ? "checkmark.circle.fill" : "circle")
+                            .foregroundStyle(isActive ? .green : .secondary)
+                            .font(.caption)
+                        Text(sub.name)
+                            .font(.callout)
+                        Spacer()
+                        Image(systemName: "globe")
+                            .foregroundStyle(.secondary)
+                            .font(.caption)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .simultaneousGesture(TapGesture().modifiers(.option).onEnded {
+                    appState.openPortal(tenantId: tenant.tenantId, subscriptionId: sub.id)
+                })
+                .disabled(session.loginStatus == .loggingIn)
+            }
+        }
+        .padding(.leading, 16)
     }
 
     @ViewBuilder
@@ -88,8 +124,6 @@ struct TenantRow: View {
 
     private var expandedContent: some View {
         VStack(alignment: .leading, spacing: 8) {
-            SubscriptionSection(tenant: tenant, session: session, appState: appState)
-
             if tenant.pim != nil {
                 PIMSection(tenant: tenant, session: session, appState: appState)
             }
