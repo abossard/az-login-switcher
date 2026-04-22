@@ -1,0 +1,20 @@
+# az-login-switcher configuration
+# Copy this file to ~/.az-login-switcher.yaml and edit with your tenant/subscription details
+
+tenants:
+  - name: "Contoso Development"
+    tenantId: "12345678-1234-1234-1234-123456789abc"
+    subscriptions:
+      - name: "Dev Subscription"
+        id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+      - name: "Staging Subscription"
+        id: "ffffffff-1111-2222-3333-444444444444"
+    pim:
+      justification: "Development and testing work"
+      duration: "PT8H"
+
+  - name: "Contoso Production"
+    tenantId: "87654321-4321-4321-4321-cba987654321"
+    subscriptions:
+      - name: "Production Subscription"
+        id: "55555555-6666-7777-8888-999999999999"
