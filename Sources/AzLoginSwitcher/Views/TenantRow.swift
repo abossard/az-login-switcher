@@ -9,9 +9,16 @@ struct TenantRow: View {
         appState.session(for: tenant.tenantId)
     }
 
+    /// True if a different tenant is currently logged in
+    private var anotherTenantIsActive: Bool {
+        appState.tenantSessions.contains { key, value in
+            key != tenant.tenantId && value.loginStatus == .loggedIn
+        }
+    }
+
     private var statusColor: Color {
         switch session.loginStatus {
-        case .idle: .gray
+        case .idle: anotherTenantIsActive ? .yellow : .gray
         case .loggingIn: .yellow
         case .loggedIn: .green
         case .failed: .red
