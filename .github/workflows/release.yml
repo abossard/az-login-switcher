@@ -1,0 +1,51 @@
+name: Release
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show Swift version
+        run: swift --version
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Pillow
+        run: pip install Pillow
+
+      - name: Generate icon
+        run: python scripts/make_icon.py
+
+      - name: Build app bundle
+        run: |
+          chmod +x build.sh
+          ./build.sh
+
+      - name: Ad-hoc sign (required for Apple Silicon)
+        run: codesign --force --deep --sign - build/AzLoginSwitcher.app
+
+      - name: Create zip
+        run: ditto -c -k --keepParent build/AzLoginSwitcher.app AzLoginSwitcher.zip
+
+      - name: Set release tag
+        id: tag
+        run: echo "tag=v$(date +'%Y.%m.%d')-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: Build ${{ steps.tag.outputs.tag }}
+          files: AzLoginSwitcher.zip
+          generate_release_notes: true
+          make_latest: true

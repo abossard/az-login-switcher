@@ -44,4 +44,7 @@ cp .build/release/AzLoginSwitcher "$MACOS_DIR/"
 echo "Copying app icon..."
 cp Resources/AppIcon.icns "$RESOURCES_DIR/AppIcon.icns"
 
+echo "Ad-hoc signing..."
+codesign --force --deep --sign - "$APP_DIR"
+
 echo "✅ Build complete: $APP_DIR"

@@ -5,16 +5,23 @@
 
 A macOS menu bar app for switching Azure tenants, managing subscriptions, activating PIM roles, and opening Azure Portal — all from your menu bar in seconds.
 
-## Prerequisites
+## Install
 
-- **macOS** 15 or later
-- **Azure CLI** (`az`) installed
-- **Swift** 5.9 or later
+### From Release (recommended)
 
-## Build
+1. Download `AzLoginSwitcher.zip` from [Releases](https://github.com/abossard/az-login-switcher/releases/latest)
+2. Unzip and move `AzLoginSwitcher.app` to `/Applications/`
+3. On first launch, macOS will block it (unsigned). Fix with:
+   ```bash
+   xattr -cr /Applications/AzLoginSwitcher.app
+   ```
+4. Open the app — a cloud icon ☁️ appears in your menu bar
+
+### Build from Source
+
+Requires macOS 15+, Swift 5.9+, Python 3 with Pillow (`pip install Pillow`).
 
 ```bash
-swift build -c release
 ./build.sh
 open build/AzLoginSwitcher.app
 ```
@@ -48,5 +55,6 @@ Copy `example-config.yaml` to `~/.az-login-switcher.yaml` and edit with your ten
 - **Subscription management** — View and switch subscriptions within a tenant
 - **PIM activation** — Activate privileged roles with justification
 - **Portal links** — Open Azure Portal directly to your active subscription
-- **Background login** — Authenticate without interrupting your workflow
-- **Terminal integration** — Optionally open a terminal with the active context
+- **Background login** — Authenticate via browser without interrupting your workflow
+- **Browser picker** — Open Azure Portal in Safari, Chrome, Edge, or Firefox
+- **Verbose logging** — All commands logged to `~/Library/Logs/az-login-switcher/`
