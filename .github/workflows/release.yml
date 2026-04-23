@@ -37,6 +37,13 @@ jobs:
       - name: Create zip
         run: ditto -c -k --keepParent build/AzLoginSwitcher.app AzLoginSwitcher.zip
 
+      - name: Create DMG
+        run: |
+          mkdir -p dmg-stage
+          cp -R build/AzLoginSwitcher.app dmg-stage/
+          ln -s /Applications dmg-stage/Applications
+          hdiutil create -volname "AzLoginSwitcher" -srcfolder dmg-stage -ov -format UDZO AzLoginSwitcher.dmg
+
       - name: Set release tag
         id: tag
         run: echo "tag=v$(date +'%Y.%m.%d')-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
@@ -46,6 +53,8 @@ jobs:
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
           name: Build ${{ steps.tag.outputs.tag }}
-          files: AzLoginSwitcher.zip
+          files: |
+            AzLoginSwitcher.zip
+            AzLoginSwitcher.dmg
           generate_release_notes: true
           make_latest: true

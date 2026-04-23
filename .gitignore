@@ -5,3 +5,5 @@ xcuserdata/
 *.xcodeproj
 *.xcworkspace
 .swiftpm/
+*.dmg
+*.zip
