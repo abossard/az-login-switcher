@@ -13,7 +13,6 @@ struct ShellExecutor: ShellExecuting {
         
         try process.run()
         
-        // Read stdout and stderr concurrently to avoid pipe deadlocks
         async let stdoutData = readPipe(stdoutPipe)
         async let stderrData = readPipe(stderrPipe)
         
@@ -45,7 +44,6 @@ struct ShellExecutor: ShellExecuting {
             }
         }
         
-        // Fallback: try to resolve via env
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = ["which", "az"]

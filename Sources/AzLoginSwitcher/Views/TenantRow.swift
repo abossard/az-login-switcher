@@ -60,7 +60,7 @@ struct TenantRow: View {
                 .fontWeight(.bold)
 
             if cache.effectivelyLoggedIn, let loginAt = cache.loginAt {
-                Text(loginAt, style: .relative)
+                RelativeTimeText(date: loginAt)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -123,7 +123,7 @@ struct TenantRow: View {
     // MARK: - Subscription Picker (all discovered, with checkboxes)
 
     private var subscriptionPicker: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text("Select subscriptions")
                     .font(.caption)
@@ -165,6 +165,30 @@ struct TenantRow: View {
                     .buttonStyle(.borderless)
                 }
             }
+
+            Divider()
+
+            // Auto-open browsers on subscription select
+            Text("Auto-open portal in:")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                ForEach(runner.availableBrowsers) { browser in
+                    let isChecked = runner.autoOpenBrowserIds.contains(browser.id)
+                    Button {
+                        runner.send(.toggleAutoOpenBrowser(browser.id))
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(nsImage: BrowserService.icon(for: browser, size: 16))
+                            Image(systemName: isChecked ? "checkmark.square.fill" : "square")
+                                .foregroundStyle(isChecked ? .blue : .secondary)
+                                .font(.caption)
+                        }
+                    }
+                    .buttonStyle(.borderless)
+                    .help(browser.name)
+                }
+            }
         }
         .padding(.leading, 16)
         .padding(.vertical, 4)
@@ -193,7 +217,7 @@ struct TenantRow: View {
                             Text(sub.name)
                                 .font(.callout)
                             if isActive, let setAt = cache.subscriptionSetAt {
-                                Text(setAt, style: .relative)
+                                RelativeTimeText(date: setAt)
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
                             }

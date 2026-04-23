@@ -70,7 +70,7 @@ struct PIMSection: View {
                         .foregroundStyle(.secondary)
                 }
                 if let updatedAt = entry?.updatedAt {
-                    Text(updatedAt, style: .relative)
+                    RelativeTimeText(date: updatedAt)
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }

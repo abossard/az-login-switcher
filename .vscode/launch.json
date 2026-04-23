@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:az-login-switcher}",
+            "name": "Debug AzLoginSwitcher",
+            "target": "AzLoginSwitcher",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug AzLoginSwitcher"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:az-login-switcher}",
+            "name": "Release AzLoginSwitcher",
+            "target": "AzLoginSwitcher",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release AzLoginSwitcher"
+        }
+    ]
+}

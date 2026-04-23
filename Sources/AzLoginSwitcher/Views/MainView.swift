@@ -18,8 +18,9 @@ struct MainView: View {
             Divider()
             bottomBar
         }
-        .frame(width: 380)
-        .frame(minHeight: 200, maxHeight: 600)
+        .frame(width: 500)
+        .frame(maxHeight: NSScreen.main.map { $0.visibleFrame.height * 0.8 } ?? 800)
+        .fixedSize(horizontal: false, vertical: true)
         .onAppear { runner.send(.loadConfig) }
     }
 
@@ -35,8 +36,19 @@ struct MainView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Spacer()
+            Button {
+                runner.send(.cancelAction)
+            } label: {
+                Label("Cancel", systemImage: "xmark.circle.fill")
+                    .font(.caption)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.red)
+            .controlSize(.small)
         }
         .frame(maxWidth: .infinity)
+        .padding(.horizontal, 10)
         .padding(.vertical, 6)
         .background(Color.accentColor.opacity(0.1))
     }
@@ -71,19 +83,17 @@ struct MainView: View {
     }
 
     private var tenantListView: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                if let tenants = runner.config?.tenants {
-                    ForEach(tenants, id: \.tenantId) { tenant in
-                        TenantRow(tenant: tenant, runner: runner)
-                        if tenant.tenantId != tenants.last?.tenantId {
-                            Divider()
-                        }
+        VStack(alignment: .leading, spacing: 12) {
+            if let tenants = runner.config?.tenants {
+                ForEach(tenants, id: \.tenantId) { tenant in
+                    TenantRow(tenant: tenant, runner: runner)
+                    if tenant.tenantId != tenants.last?.tenantId {
+                        Divider()
                     }
                 }
             }
-            .padding()
         }
+        .padding()
     }
 
     private var bottomBar: some View {

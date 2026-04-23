@@ -17,11 +17,13 @@ enum AppEvent: Sendable {
     case loginInTerminal(TenantConfig)
     case logout(tenantId: String)
     case logoutAll
+    case cancelAction
     case selectSubscription(SubscriptionConfig, tenantId: String)
     case activatePIM(PIMEligibleRole, TenantConfig)
     case openPortal(tenantId: String, subscriptionId: String, browserBundleId: String)
     case openPortalDefault(tenantId: String, subscriptionId: String)
     case toggleSubscriptionExposure(AzSubscription, tenantId: String)
+    case toggleAutoOpenBrowser(String)  // browser bundle ID
     case openLogFolder
     case reloadBrowsers
     case refreshAfterExternalLogin(tenantId: String)
@@ -42,6 +44,7 @@ final class ActionRunner {
     private(set) var azureContext: AzureContext = .empty
     private(set) var actionHistory: [AzAction] = []
     private(set) var availableBrowsers: [BrowserInfo] = []
+    private(set) var autoOpenBrowserIds: Set<String> = []  // browsers to auto-open on subscription select
 
     // MARK: - Computed
     var isBusy: Bool { fsmState != .idle }
@@ -100,10 +103,23 @@ final class ActionRunner {
                 await self.executeLogoutAll(action: action)
             }
 
+        case .cancelAction:
+            currentTask?.cancel()
+            currentTask = nil
+            if case .busy(var action) = fsmState {
+                action.complete(phase: .failed("Cancelled"))
+                actionHistory.append(action)
+                if actionHistory.count > 100 { actionHistory.removeFirst() }
+                logger.logAction(action)
+            }
+            fsmState = .idle
+
         case .selectSubscription(let sub, let tenantId):
             guard !isBusy else { return }
             startAction(.selectSubscription(subscriptionId: sub.id, subscriptionName: sub.name, tenantId: tenantId)) { [self] action in
                 await self.executeSelectSubscription(action: action, subscription: sub, tenantId: tenantId)
+                // Auto-open browsers after subscription is set
+                self.autoOpenPortals(tenantId: tenantId, subscriptionId: sub.id)
             }
 
         case .activatePIM(let role, let tenant):
@@ -126,6 +142,13 @@ final class ActionRunner {
 
         case .toggleSubscriptionExposure(let sub, let tenantId):
             handleToggleSubscriptionExposure(sub, tenantId: tenantId)
+
+        case .toggleAutoOpenBrowser(let bundleId):
+            if autoOpenBrowserIds.contains(bundleId) {
+                autoOpenBrowserIds.remove(bundleId)
+            } else {
+                autoOpenBrowserIds.insert(bundleId)
+            }
 
         case .openLogFolder:
             logger.openInFinder()
@@ -533,6 +556,17 @@ final class ActionRunner {
         let parts = scope.split(separator: "/")
         guard let idx = parts.firstIndex(of: "subscriptions"), idx + 1 < parts.count else { return nil }
         return String(parts[idx + 1])
+    }
+
+    /// Auto-open portal in all checked browsers after subscription selection
+    private func autoOpenPortals(tenantId: String, subscriptionId: String) {
+        guard !autoOpenBrowserIds.isEmpty else { return }
+        let url = PortalURL.portalURL(tenantId: tenantId, subscriptionId: subscriptionId)
+        for browserId in autoOpenBrowserIds {
+            if let browser = availableBrowsers.first(where: { $0.id == browserId }) {
+                BrowserService.open(url, in: browser)
+            }
+        }
     }
 
     func cache(for tenantId: String) -> TenantCache {

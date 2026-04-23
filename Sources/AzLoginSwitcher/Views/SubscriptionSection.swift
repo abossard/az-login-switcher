@@ -29,7 +29,7 @@ struct SubscriptionSection: View {
                 .font(.callout)
 
             if isActive, let setAt = cache.subscriptionSetAt {
-                Text(setAt, style: .relative)
+                RelativeTimeText(date: setAt)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
