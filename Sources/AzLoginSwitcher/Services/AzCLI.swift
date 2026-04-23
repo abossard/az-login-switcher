@@ -34,8 +34,8 @@ enum AzCLIError: Error, LocalizedError {
 }
 
 final class AzCLI: Sendable {
-    private let shell: ShellExecuting
-    private let azPath: String
+    let shell: ShellExecuting
+    let azPath: String
     
     init(shell: ShellExecuting, azPath: String? = nil) {
         self.shell = shell
@@ -99,6 +99,16 @@ final class AzCLI: Sendable {
             return user
         } catch {
             throw AzCLIError.parseError("Failed to decode user: \(error.localizedDescription)")
+        }
+    }
+    
+    func logout(username: String) async throws {
+        let result = try await shell.run(
+            executable: azPath,
+            arguments: ["logout", "--username", username]
+        )
+        guard result.exitCode == 0 else {
+            throw AzCLIError.commandFailed(stderr: result.stderr, exitCode: result.exitCode)
         }
     }
     
