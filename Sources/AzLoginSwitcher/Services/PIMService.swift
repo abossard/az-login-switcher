@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - Models
 
-struct PIMEligibleRole: Equatable, Sendable {
+struct PIMEligibleRole: Equatable, Sendable, Codable {
     let id: String
     let roleDefinitionId: String
     let scope: String
@@ -11,14 +11,14 @@ struct PIMEligibleRole: Equatable, Sendable {
     var roleName: String?
 }
 
-struct PIMActiveRole: Equatable, Sendable {
+struct PIMActiveRole: Equatable, Sendable, Codable {
     let roleDefinitionId: String
     let scope: String
     let status: String
     let endDateTime: String?
 }
 
-struct PIMActivationResult: Equatable, Sendable {
+struct PIMActivationResult: Equatable, Sendable, Codable {
     let status: String
     let expiresAt: String?
 }

@@ -13,11 +13,11 @@ struct TenantRow: View {
     }
 
     private var anotherTenantIsActive: Bool {
-        runner.tenantCaches.contains { $0.key != tenant.tenantId && $0.value.isLoggedIn }
+        runner.tenantCaches.contains { $0.key != tenant.tenantId && $0.value.effectivelyLoggedIn }
     }
 
     private var statusColor: Color {
-        if cache.isLoggedIn { return .green }
+        if cache.effectivelyLoggedIn { return .green }
         if anotherTenantIsActive { return .yellow }
         return .gray
     }
@@ -43,11 +43,11 @@ struct TenantRow: View {
                 subscriptionQuickPick
             }
 
-            if isExpanded && cache.isLoggedIn {
+            if isExpanded && cache.effectivelyLoggedIn {
                 expandedContent
             }
         }
-        .onChange(of: cache.isLoggedIn) { _, loggedIn in
+        .onChange(of: cache.effectivelyLoggedIn) { _, loggedIn in
             if loggedIn { isExpanded = true }
         }
     }
@@ -63,7 +63,7 @@ struct TenantRow: View {
             Text(tenant.name)
                 .fontWeight(.bold)
 
-            if cache.isLoggedIn, let loginAt = cache.loginAt {
+            if cache.effectivelyLoggedIn, let loginAt = cache.loginAt {
                 Text(loginAt, style: .relative)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -73,7 +73,7 @@ struct TenantRow: View {
 
             Button {
                 showingPicker.toggle()
-                if showingPicker && !cache.isLoggedIn {
+                if showingPicker && !cache.effectivelyLoggedIn {
                     runner.send(.login(currentTenant))
                 }
             } label: {
@@ -83,15 +83,8 @@ struct TenantRow: View {
             .help("Select subscriptions to show")
             .disabled(runner.isBusy)
 
-            if cache.isLoggedIn {
-                Button {
-                    runner.send(.logout(tenantId: tenant.tenantId))
-                } label: {
-                    Image(systemName: "rectangle.portrait.and.arrow.right")
-                }
-                .buttonStyle(.borderless)
-                .help("Logout")
-                .disabled(runner.isBusy)
+            if cache.effectivelyLoggedIn {
+                // No per-tenant logout — use global logout in bottom bar
             }
 
             Button("Login") {
@@ -153,7 +146,7 @@ struct TenantRow: View {
             }
 
             let discovered = cache.allDiscoveredSubscriptions
-            if !cache.isLoggedIn {
+            if !cache.effectivelyLoggedIn {
                 HStack(spacing: 4) {
                     ProgressView().controlSize(.small)
                     Text("Login to discover subscriptions...")
@@ -198,7 +191,7 @@ struct TenantRow: View {
                 let isActive = cache.activeSubscription?.id == sub.id
                 HStack(spacing: 6) {
                     Button {
-                        if cache.isLoggedIn {
+                        if cache.effectivelyLoggedIn {
                             runner.send(.selectSubscription(sub, tenantId: tenant.tenantId))
                         } else {
                             runner.send(.login(currentTenant))

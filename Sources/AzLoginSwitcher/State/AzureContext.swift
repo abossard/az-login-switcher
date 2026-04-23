@@ -2,7 +2,7 @@ import Foundation
 
 /// The ACTUAL current global Azure CLI context.
 /// az CLI has ONE context — this is the source of truth, separate from per-tenant cache.
-struct AzureContext: Equatable, Sendable {
+struct AzureContext: Equatable, Sendable, Codable {
     var currentTenantId: String?
     var currentSubscriptionId: String?
     var currentSubscriptionName: String?

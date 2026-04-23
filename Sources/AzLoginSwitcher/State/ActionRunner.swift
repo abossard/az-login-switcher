@@ -16,6 +16,7 @@ enum AppEvent: Sendable {
     case login(TenantConfig)
     case loginInTerminal(TenantConfig)
     case logout(tenantId: String)
+    case logoutAll
     case selectSubscription(SubscriptionConfig, tenantId: String)
     case activatePIM(PIMEligibleRole, TenantConfig)
     case openPortal(tenantId: String, subscriptionId: String, browserBundleId: String)
@@ -93,6 +94,12 @@ final class ActionRunner {
                 await self.executeLogout(action: action, tenantId: tenantId)
             }
 
+        case .logoutAll:
+            guard !isBusy else { return }
+            startAction(.logout(tenantId: "all", tenantName: "All Accounts")) { [self] action in
+                await self.executeLogoutAll(action: action)
+            }
+
         case .selectSubscription(let sub, let tenantId):
             guard !isBusy else { return }
             startAction(.selectSubscription(subscriptionId: sub.id, subscriptionName: sub.name, tenantId: tenantId)) { [self] action in
@@ -144,6 +151,7 @@ final class ActionRunner {
             config = nil
         }
         availableBrowsers = BrowserService.installedBrowsers()
+        restoreState()
     }
 
     // MARK: - Action Lifecycle
@@ -179,6 +187,7 @@ final class ActionRunner {
         logger.logAction(action)
         fsmState = .idle
         currentTask = nil
+        persistState()
     }
 
     // MARK: - Run az command helper
@@ -378,6 +387,33 @@ final class ActionRunner {
         completeAction(phase: .succeeded)
     }
 
+    // MARK: - Logout All
+    
+    private func executeLogoutAll(action: AzAction) async {
+        updatePhase("Clearing all accounts...")
+        do {
+            let result = try await azCLI.shell.run(
+                executable: azCLI.azPath,
+                arguments: ["account", "clear"]
+            )
+            guard result.exitCode == 0 else {
+                completeAction(phase: .failed("az account clear failed"))
+                return
+            }
+        } catch {
+            completeAction(phase: .failed("Logout failed: \(error.localizedDescription)"))
+            return
+        }
+        
+        // Reset all caches
+        for tid in tenantCaches.keys {
+            tenantCaches[tid] = TenantCache()
+        }
+        azureContext = .empty
+        persistState()
+        completeAction(phase: .succeeded)
+    }
+
     // MARK: - Select Subscription
 
     private func executeSelectSubscription(action: AzAction, subscription: SubscriptionConfig, tenantId: String) async {
@@ -505,5 +541,29 @@ final class ActionRunner {
 
     func isSubscriptionExposed(_ subId: String, tenantId: String) -> Bool {
         config?.tenants.first(where: { $0.tenantId == tenantId })?.subscriptions.contains { $0.id == subId } ?? false
+    }
+
+    // MARK: - State Persistence
+
+    /// Save tenant caches and azure context to disk
+    func persistState() {
+        let state = PersistedState(
+            tenantCaches: tenantCaches,
+            azureContext: azureContext,
+            savedAt: Date()
+        )
+        state.save()
+    }
+
+    /// Restore state from disk, marking stale logins
+    func restoreState() {
+        guard let state = PersistedState.load() else { return }
+        tenantCaches = state.tenantCaches
+        azureContext = state.azureContext
+        
+        // Mark stale logins
+        for (tid, cache) in tenantCaches where cache.isStale && cache.isLoggedIn {
+            tenantCaches[tid]!.isLoggedIn = false
+        }
     }
 }
