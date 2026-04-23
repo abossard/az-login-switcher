@@ -149,6 +149,39 @@ final class PIMService: Sendable {
         return PIMActivationResult(status: status, expiresAt: expiresAt)
     }
     
+    /// Resolve role definition IDs to human-readable names
+    func resolveRoleNames(for roles: [PIMEligibleRole], subscriptionId: String) async -> [PIMEligibleRole] {
+        // Fetch all role definitions for this scope
+        let result: ShellResult
+        do {
+            result = try await shell.run(
+                executable: azPath,
+                arguments: ["role", "definition", "list", "--scope", "/subscriptions/\(subscriptionId)", "-o", "json"]
+            )
+        } catch { return roles }
+
+        guard result.exitCode == 0,
+              let data = result.stdout.data(using: .utf8),
+              let definitions = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            return roles
+        }
+
+        // Build lookup: full roleDefinitionId path → roleName
+        var nameMap: [String: String] = [:]
+        for def in definitions {
+            if let id = def["id"] as? String,
+               let roleName = def["roleName"] as? String {
+                nameMap[id.lowercased()] = roleName
+            }
+        }
+
+        return roles.map { role in
+            var updated = role
+            updated.roleName = nameMap[role.roleDefinitionId.lowercased()]
+            return updated
+        }
+    }
+
     func listActiveAssignments(subscriptionId: String) async throws -> [PIMActiveRole] {
         let url = "https://management.azure.com/subscriptions/\(subscriptionId)/providers/Microsoft.Authorization/roleAssignmentScheduleInstances?api-version=2020-10-01&$filter=asTarget()"
         

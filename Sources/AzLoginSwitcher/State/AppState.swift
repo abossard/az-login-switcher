@@ -116,11 +116,12 @@ final class AppState {
             let user = try await azCLI.getSignedInUser()
             tenantSessions[tenant.tenantId]!.signedInUser = user
 
-            // Discover PIM roles for exposed subscriptions
+            // Discover PIM roles for exposed subscriptions and resolve names
             var allRoles: [PIMEligibleRole] = []
             for sub in tenant.subscriptions {
                 do {
-                    let roles = try await pimService.discoverEligibleRoles(subscriptionId: sub.id)
+                    var roles = try await pimService.discoverEligibleRoles(subscriptionId: sub.id)
+                    roles = await pimService.resolveRoleNames(for: roles, subscriptionId: sub.id)
                     allRoles.append(contentsOf: roles)
                 } catch {}
             }

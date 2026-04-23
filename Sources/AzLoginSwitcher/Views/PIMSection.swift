@@ -30,7 +30,7 @@ struct PIMSection: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(role.roleName ?? displayName(from: role.roleDefinitionId))
                     .font(.callout)
-                Text(role.scope)
+                Text(friendlyScope(role.scope))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -88,5 +88,19 @@ struct PIMSection: View {
     private func displayName(from roleDefinitionId: String) -> String {
         let parts = roleDefinitionId.split(separator: "/")
         return parts.last.map(String.init) ?? "Role"
+    }
+
+    /// Show subscription name instead of full ARM scope path
+    private func friendlyScope(_ scope: String) -> String {
+        let parts = scope.split(separator: "/")
+        if let idx = parts.firstIndex(of: "subscriptions"), idx + 1 < parts.count {
+            let subId = String(parts[idx + 1])
+            // Try to find subscription name from tenant config
+            if let name = tenant.subscriptions.first(where: { $0.id == subId })?.name {
+                return name
+            }
+            return subId
+        }
+        return scope
     }
 }
