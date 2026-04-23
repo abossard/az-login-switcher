@@ -3,7 +3,6 @@ import SwiftUI
 struct TenantRow: View {
     let tenant: TenantConfig
     let runner: ActionRunner
-    @State private var isExpanded: Bool = false
     @State private var showingPicker: Bool = false
 
     private var cache: TenantCache { runner.cache(for: tenant.tenantId) }
@@ -43,12 +42,9 @@ struct TenantRow: View {
                 subscriptionQuickPick
             }
 
-            if isExpanded && cache.effectivelyLoggedIn {
+            if cache.effectivelyLoggedIn {
                 expandedContent
             }
-        }
-        .onChange(of: cache.effectivelyLoggedIn) { _, loggedIn in
-            if loggedIn { isExpanded = true }
         }
     }
 
@@ -101,13 +97,6 @@ struct TenantRow: View {
             .buttonStyle(.borderless)
             .help("Login in Terminal")
             .disabled(runner.isBusy)
-
-            Button {
-                isExpanded.toggle()
-            } label: {
-                Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-            }
-            .buttonStyle(.borderless)
         }
     }
 
