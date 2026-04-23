@@ -1,5 +1,8 @@
 # az-login-switcher
 
+> [!CAUTION]
+> **⚠️ This project was entirely vibe-coded with AI assistance. It has NOT been professionally reviewed, audited, or tested for production use. Do NOT use this without proper vetting, security review, and thorough testing. Use at your own risk.**
+
 A macOS menu bar app for switching Azure tenants, managing subscriptions, activating PIM roles, and opening Azure Portal — all from your menu bar in seconds.
 
 ## Prerequisites
