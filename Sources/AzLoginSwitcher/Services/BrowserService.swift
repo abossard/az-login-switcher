@@ -75,19 +75,13 @@ struct BrowserService {
     @MainActor
     static func icon(for browser: BrowserInfo, size: CGFloat = 16) -> NSImage {
         let original = NSWorkspace.shared.icon(forFile: browser.appURL.path)
-        let targetSize = NSSize(width: size, height: size)
-        
-        let resized = NSImage(size: targetSize)
-        resized.lockFocus()
-        NSGraphicsContext.current?.imageInterpolation = .high
-        original.draw(
-            in: NSRect(origin: .zero, size: targetSize),
-            from: NSRect(origin: .zero, size: original.size),
-            operation: .copy,
-            fraction: 1.0
-        )
-        resized.unlockFocus()
-        resized.isTemplate = false
-        return resized
+        // Use the original at its natural resolution — SwiftUI will scale it
+        // Just set the logical size for layout
+        let result = NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
+            original.draw(in: rect)
+            return true
+        }
+        result.isTemplate = false
+        return result
     }
 }
