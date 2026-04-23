@@ -31,12 +31,12 @@ final class ConfigModelsTests: XCTestCase {
                 yaml: """
                 tenants:
                   - name: "Dev Testing"
-                    tenantId: "70a036f6-8e4d-4615-bad6-149c02e7720d"
+                    tenantId: "aabbccdd-1111-2222-3333-444455556666"
                     subscriptions:
                       - name: "Dev Sub"
-                        id: "25d01a19-fa97-41b2-be11-5db6b6abe560"
+                        id: "11111111-aaaa-bbbb-cccc-ddddeeee0001"
                       - name: "Prod Sub"
-                        id: "d9cdbba7-6a8e-465c-905a-d875d3b436d7"
+                        id: "11111111-aaaa-bbbb-cccc-ddddeeee0002"
                     pim:
                       justification: "dev testing"
                       duration: "PT8H"
@@ -45,10 +45,10 @@ final class ConfigModelsTests: XCTestCase {
                     tenants: [
                         TenantConfig(
                             name: "Dev Testing",
-                            tenantId: "70a036f6-8e4d-4615-bad6-149c02e7720d",
+                            tenantId: "aabbccdd-1111-2222-3333-444455556666",
                             subscriptions: [
-                                SubscriptionConfig(name: "Dev Sub", id: "25d01a19-fa97-41b2-be11-5db6b6abe560"),
-                                SubscriptionConfig(name: "Prod Sub", id: "d9cdbba7-6a8e-465c-905a-d875d3b436d7")
+                                SubscriptionConfig(name: "Dev Sub", id: "11111111-aaaa-bbbb-cccc-ddddeeee0001"),
+                                SubscriptionConfig(name: "Prod Sub", id: "11111111-aaaa-bbbb-cccc-ddddeeee0002")
                             ],
                             pim: PIMConfig(justification: "dev testing", duration: "PT8H")
                         )

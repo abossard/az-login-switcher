@@ -31,7 +31,6 @@ enum AzActionKind: Equatable, Sendable {
 enum AzActionPhase: Equatable, Sendable {
     case pending
     case running(step: String)           // human-readable step (display only)
-    case awaitingExternalLogin           // terminal login — waiting for user
     case succeeded
     case partialSuccess(String)          // e.g., login OK but PIM discovery failed
     case failed(String)

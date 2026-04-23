@@ -4,6 +4,7 @@ struct TenantRow: View {
     let tenant: TenantConfig
     let runner: ActionRunner
     @State private var showingPicker: Bool = false
+    @State private var searchText: String = ""
 
     private var cache: TenantCache { runner.cache(for: tenant.tenantId) }
 
@@ -21,20 +22,9 @@ struct TenantRow: View {
         return .gray
     }
 
-    private var isAwaitingLogin: Bool {
-        if case .awaitingExternalLogin(let tid) = runner.fsmState, tid == tenant.tenantId {
-            return true
-        }
-        return false
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             headerRow
-
-            if isAwaitingLogin {
-                awaitingLoginRow
-            }
 
             if showingPicker {
                 subscriptionPicker
@@ -88,50 +78,23 @@ struct TenantRow: View {
             }
             .buttonStyle(.borderless)
             .disabled(runner.isBusy)
-
-            Button {
-                runner.send(.loginInTerminal(currentTenant))
-            } label: {
-                Image(systemName: "terminal")
-            }
-            .buttonStyle(.borderless)
-            .help("Login in Terminal")
-            .disabled(runner.isBusy)
         }
-    }
-
-    // MARK: - Awaiting External Login
-
-    private var awaitingLoginRow: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "hourglass")
-                .foregroundStyle(.orange)
-                .font(.caption)
-            Text("Waiting for login...")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Spacer()
-            Button("Refresh") {
-                runner.send(.refreshAfterExternalLogin(tenantId: tenant.tenantId))
-            }
-            .buttonStyle(.borderless)
-            .font(.caption)
-        }
-        .padding(.leading, 16)
     }
 
     // MARK: - Subscription Picker (all discovered, with checkboxes)
 
     private var subscriptionPicker: some View {
         VStack(alignment: .leading, spacing: 6) {
+            // Header — always visible
             HStack {
                 Text("Select subscriptions")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
-                Button("Done") { showingPicker = false }
+                Button("Done") { showingPicker = false; searchText = "" }
                     .font(.caption)
-                    .buttonStyle(.borderless)
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
             }
 
             let discovered = cache.allDiscoveredSubscriptions
@@ -147,28 +110,47 @@ struct TenantRow: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(discovered, id: \.id) { sub in
-                    let isExposed = runner.isSubscriptionExposed(sub.id, tenantId: tenant.tenantId)
-                    Button {
-                        runner.send(.toggleSubscriptionExposure(sub, tenantId: tenant.tenantId))
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: isExposed ? "checkmark.square.fill" : "square")
-                                .foregroundStyle(isExposed ? .blue : .secondary)
-                                .font(.caption)
-                            Text(sub.name)
-                                .font(.callout)
-                            Spacer()
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.borderless)
+                // Search field
+                TextField("Filter...", text: $searchText)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.callout)
+
+                let filtered = discovered.filter {
+                    searchText.isEmpty || $0.name.localizedCaseInsensitiveContains(searchText)
                 }
+
+                // Scrollable subscription list
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 1) {
+                        ForEach(filtered, id: \.id) { sub in
+                            let isExposed = runner.isSubscriptionExposed(sub.id, tenantId: tenant.tenantId)
+                            Button {
+                                runner.send(.toggleSubscriptionExposure(sub, tenantId: tenant.tenantId))
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: isExposed ? "checkmark.square.fill" : "square")
+                                        .foregroundStyle(isExposed ? .blue : .secondary)
+                                        .font(.caption)
+                                    Text(sub.name)
+                                        .font(.callout)
+                                    Spacer()
+                                }
+                                .contentShape(Rectangle())
+                                .padding(.vertical, 1)
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    }
+                }
+
+                Text("\(filtered.count) of \(discovered.count) subscriptions")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
 
             Divider()
 
-            // Auto-open browsers on subscription select
+            // Auto-open browsers — always visible
             Text("Auto-open portal in:")
                 .font(.caption)
                 .foregroundStyle(.secondary)

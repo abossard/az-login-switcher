@@ -6,7 +6,6 @@ import SwiftUI
 enum FSMState: Equatable {
     case idle
     case busy(AzAction)
-    case awaitingExternalLogin(tenantId: String)
 }
 
 // MARK: - Events
@@ -14,7 +13,6 @@ enum FSMState: Equatable {
 enum AppEvent: Sendable {
     case loadConfig
     case login(TenantConfig)
-    case loginInTerminal(TenantConfig)
     case logout(tenantId: String)
     case logoutAll
     case cancelAction
@@ -26,7 +24,6 @@ enum AppEvent: Sendable {
     case toggleAutoOpenBrowser(String)  // browser bundle ID
     case openLogFolder
     case reloadBrowsers
-    case refreshAfterExternalLogin(tenantId: String)
 }
 
 // MARK: - ActionRunner
@@ -52,22 +49,16 @@ final class ActionRunner {
         if case .busy(let action) = fsmState { return action }
         return nil
     }
-    var isAwaitingExternalLogin: Bool {
-        if case .awaitingExternalLogin = fsmState { return true }
-        return false
-    }
 
     // MARK: - Dependencies
     private let azCLI: AzCLI
     private let pimService: PIMService
-    private let loginLauncher: LoginLaunching
     private let logger: ActionLogger
     private var currentTask: Task<Void, Never>?
 
-    init(azCLI: AzCLI, pimService: PIMService, loginLauncher: LoginLaunching, logger: ActionLogger) {
+    init(azCLI: AzCLI, pimService: PIMService, logger: ActionLogger) {
         self.azCLI = azCLI
         self.pimService = pimService
-        self.loginLauncher = loginLauncher
         self.logger = logger
     }
 
@@ -82,12 +73,6 @@ final class ActionRunner {
             guard !isBusy else { return }
             startAction(.login(tenantId: tenant.tenantId, tenantName: tenant.name)) { [self] action in
                 await self.executeLogin(action: action, tenant: tenant)
-            }
-
-        case .loginInTerminal(let tenant):
-            guard !isBusy else { return }
-            startAction(.login(tenantId: tenant.tenantId, tenantName: tenant.name)) { [self] action in
-                await self.executeTerminalLogin(action: action, tenant: tenant)
             }
 
         case .logout(let tenantId):
@@ -155,9 +140,6 @@ final class ActionRunner {
 
         case .reloadBrowsers:
             availableBrowsers = BrowserService.installedBrowsers()
-
-        case .refreshAfterExternalLogin(let tenantId):
-            handleRefreshAfterExternalLogin(tenantId: tenantId)
         }
     }
 
@@ -307,72 +289,6 @@ final class ActionRunner {
             completeAction(phase: .succeeded)
         } else {
             completeAction(phase: .partialSuccess(pimIssues.joined(separator: "; ")))
-        }
-    }
-
-    // MARK: - Terminal Login
-
-    private func executeTerminalLogin(action: AzAction, tenant: TenantConfig) async {
-        do {
-            try await loginLauncher.launchInTerminal(
-                command: "az",
-                arguments: ["login", "--tenant", tenant.tenantId]
-            )
-        } catch {
-            completeAction(phase: .failed("Failed to open terminal: \(error.localizedDescription)"))
-            return
-        }
-
-        // Transition to awaiting state — user must click "Refresh" when done
-        guard case .busy(var action) = fsmState else { return }
-        action.phase = .awaitingExternalLogin
-        fsmState = .awaitingExternalLogin(tenantId: tenant.tenantId)
-        currentTask = nil
-    }
-
-    // MARK: - Refresh After External Login
-
-    private func handleRefreshAfterExternalLogin(tenantId: String) {
-        guard case .awaitingExternalLogin(let awaitingTenantId) = fsmState,
-              awaitingTenantId == tenantId else { return }
-
-        fsmState = .idle
-
-        guard let tenant = config?.tenants.first(where: { $0.tenantId == tenantId }) else { return }
-
-        startAction(.login(tenantId: tenantId, tenantName: tenant.name)) { [self] action in
-            self.ensureCache(for: tenantId)
-            self.tenantCaches[tenantId]!.isLoggedIn = true
-            self.tenantCaches[tenantId]!.loginAt = Date()
-
-            self.updatePhase("Fetching subscriptions...")
-            do {
-                let allSubs = try await self.azCLI.listSubscriptions()
-                let tenantSubs = allSubs
-                    .filter { $0.tenantId == tenantId }
-                    .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-                self.tenantCaches[tenantId]!.allDiscoveredSubscriptions = tenantSubs
-            } catch {
-                self.completeAction(phase: .failed("Not logged in or fetch failed: \(error.localizedDescription)"))
-                return
-            }
-
-            if let firstSub = tenant.subscriptions.first {
-                self.updatePhase("Setting subscription...")
-                try? await self.azCLI.setSubscription(id: firstSub.id)
-                self.tenantCaches[tenantId]!.activeSubscription = AzSubscription(
-                    id: firstSub.id, name: firstSub.name, tenantId: tenantId,
-                    isDefault: true, state: "Enabled", homeTenantId: nil, tenantDisplayName: nil
-                )
-                self.tenantCaches[tenantId]!.subscriptionSetAt = Date()
-            }
-
-            self.updatePhase("Loading user info...")
-            if let user = try? await self.azCLI.getSignedInUser() {
-                self.tenantCaches[tenantId]!.signedInUser = user
-            }
-
-            self.completeAction(phase: .succeeded)
         }
     }
 

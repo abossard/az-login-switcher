@@ -13,14 +13,14 @@ struct MainView: View {
             } else if runner.config == nil {
                 noConfigView
             } else {
-                tenantListView
+                ScrollView {
+                    tenantListView
+                }
             }
             Divider()
             bottomBar
         }
         .frame(width: 500)
-        .frame(maxHeight: NSScreen.main.map { $0.visibleFrame.height * 0.8 } ?? 800)
-        .fixedSize(horizontal: false, vertical: true)
         .onAppear { runner.send(.loadConfig) }
     }
 
