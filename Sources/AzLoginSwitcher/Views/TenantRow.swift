@@ -34,7 +34,7 @@ struct TenantRow: View {
             headerRow
             errorRow
 
-            if showingPicker && session.loginStatus == .loggedIn {
+            if showingPicker {
                 subscriptionPicker
             } else if !currentTenant.subscriptions.isEmpty {
                 subscriptionQuickPick
@@ -69,15 +69,19 @@ struct TenantRow: View {
 
             Spacer()
 
-            if session.loginStatus == .loggedIn {
-                Button {
-                    showingPicker.toggle()
-                } label: {
-                    Image(systemName: "gearshape")
+            Button {
+                showingPicker.toggle()
+                if showingPicker && session.loginStatus != .loggedIn {
+                    // Need to login first to discover subscriptions
+                    Task {
+                        await appState.loginToTenant(currentTenant)
+                    }
                 }
-                .buttonStyle(.borderless)
-                .help("Select subscriptions to show")
+            } label: {
+                Image(systemName: "gearshape")
             }
+            .buttonStyle(.borderless)
+            .help("Select subscriptions to show")
 
             Button("Login") {
                 Task { await appState.loginToTenant(currentTenant) }
@@ -118,7 +122,14 @@ struct TenantRow: View {
             }
 
             let discovered = session.allDiscoveredSubscriptions
-            if discovered.isEmpty {
+            if session.loginStatus != .loggedIn {
+                HStack(spacing: 4) {
+                    ProgressView().controlSize(.small)
+                    Text("Login to discover subscriptions...")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else if discovered.isEmpty {
                 Text("No subscriptions found")
                     .font(.caption)
                     .foregroundStyle(.secondary)
