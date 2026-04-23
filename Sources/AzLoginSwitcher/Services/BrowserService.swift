@@ -23,13 +23,21 @@ enum BrowserError: Error, LocalizedError {
 /// Views resolve icons via BrowserService.icon(for:) on @MainActor.
 struct BrowserService {
     
-    /// All browsers installed that can handle https URLs, sorted by name
+    /// Preferred browsers to show (in order). Only these are displayed.
+    private static let preferredBrowserIds: [String] = [
+        "com.apple.Safari",
+        "com.google.Chrome",
+        "com.microsoft.edgemac",
+        "org.mozilla.firefox",
+    ]
+
+    /// Installed browsers from the preferred list, in preferred order
     @MainActor
     static func installedBrowsers() -> [BrowserInfo] {
         let httpsURL = URL(string: "https://example.com")!
         let appURLs = NSWorkspace.shared.urlsForApplications(toOpen: httpsURL)
         
-        return appURLs.compactMap { appURL in
+        let all = appURLs.compactMap { appURL -> BrowserInfo? in
             guard let bundle = Bundle(url: appURL),
                   let bundleID = bundle.bundleIdentifier else { return nil }
             
@@ -39,7 +47,11 @@ struct BrowserService {
             
             return BrowserInfo(id: bundleID, name: name, appURL: appURL)
         }
-        .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        
+        // Return only preferred browsers, in preferred order
+        return preferredBrowserIds.compactMap { prefId in
+            all.first { $0.id == prefId }
+        }
     }
     
     /// The user's default browser
