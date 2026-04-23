@@ -96,13 +96,11 @@ struct MainView: View {
                 Label("Logs", systemImage: "doc.text")
             }.buttonStyle(.borderless)
 
-            if runner.azureContext.isAuthenticated {
-                Button { runner.send(.logoutAll) } label: {
-                    Label("Logout", systemImage: "rectangle.portrait.and.arrow.right")
-                }
-                .buttonStyle(.borderless)
-                .disabled(runner.isBusy)
+            Button { runner.send(.logoutAll) } label: {
+                Label("Logout", systemImage: "rectangle.portrait.and.arrow.right")
             }
+            .buttonStyle(.borderless)
+            .disabled(runner.isBusy)
 
             Spacer()
 
