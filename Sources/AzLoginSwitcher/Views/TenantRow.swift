@@ -2,37 +2,40 @@ import SwiftUI
 
 struct TenantRow: View {
     let tenant: TenantConfig
-    let appState: AppState
+    let runner: ActionRunner
     @State private var isExpanded: Bool = false
     @State private var showingPicker: Bool = false
 
-    private var session: TenantSession {
-        appState.session(for: tenant.tenantId)
+    private var cache: TenantCache { runner.cache(for: tenant.tenantId) }
+
+    private var currentTenant: TenantConfig {
+        runner.config?.tenants.first { $0.tenantId == tenant.tenantId } ?? tenant
     }
 
     private var anotherTenantIsActive: Bool {
-        appState.tenantSessions.contains { key, value in
-            key != tenant.tenantId && value.loginStatus == .loggedIn
-        }
+        runner.tenantCaches.contains { $0.key != tenant.tenantId && $0.value.isLoggedIn }
     }
 
     private var statusColor: Color {
-        switch session.loginStatus {
-        case .idle: anotherTenantIsActive ? .yellow : .gray
-        case .loggingIn: .yellow
-        case .loggedIn: .green
-        case .failed: .red
-        }
+        if cache.isLoggedIn { return .green }
+        if anotherTenantIsActive { return .yellow }
+        return .gray
     }
 
-    private var currentTenant: TenantConfig {
-        appState.config?.tenants.first { $0.tenantId == tenant.tenantId } ?? tenant
+    private var isAwaitingLogin: Bool {
+        if case .awaitingExternalLogin(let tid) = runner.fsmState, tid == tenant.tenantId {
+            return true
+        }
+        return false
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             headerRow
-            errorRow
+
+            if isAwaitingLogin {
+                awaitingLoginRow
+            }
 
             if showingPicker {
                 subscriptionPicker
@@ -40,14 +43,12 @@ struct TenantRow: View {
                 subscriptionQuickPick
             }
 
-            if isExpanded && session.loginStatus == .loggedIn {
+            if isExpanded && cache.isLoggedIn {
                 expandedContent
             }
         }
-        .onChange(of: session.loginStatus) { _, newValue in
-            if newValue == .loggedIn {
-                isExpanded = true
-            }
+        .onChange(of: cache.isLoggedIn) { _, loggedIn in
+            if loggedIn { isExpanded = true }
         }
     }
 
@@ -62,41 +63,51 @@ struct TenantRow: View {
             Text(tenant.name)
                 .fontWeight(.bold)
 
-            if session.loginStatus == .loggingIn {
-                ProgressView()
-                    .controlSize(.small)
+            if cache.isLoggedIn, let loginAt = cache.loginAt {
+                Text(loginAt, style: .relative)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
 
             Spacer()
 
             Button {
                 showingPicker.toggle()
-                if showingPicker && session.loginStatus != .loggedIn {
-                    // Need to login first to discover subscriptions
-                    Task {
-                        await appState.loginToTenant(currentTenant)
-                    }
+                if showingPicker && !cache.isLoggedIn {
+                    runner.send(.login(currentTenant))
                 }
             } label: {
                 Image(systemName: "gearshape")
             }
             .buttonStyle(.borderless)
             .help("Select subscriptions to show")
+            .disabled(runner.isBusy)
+
+            if cache.isLoggedIn {
+                Button {
+                    runner.send(.logout(tenantId: tenant.tenantId))
+                } label: {
+                    Image(systemName: "rectangle.portrait.and.arrow.right")
+                }
+                .buttonStyle(.borderless)
+                .help("Logout")
+                .disabled(runner.isBusy)
+            }
 
             Button("Login") {
-                Task { await appState.loginToTenant(currentTenant) }
+                runner.send(.login(currentTenant))
             }
             .buttonStyle(.borderless)
-            .disabled(session.loginStatus == .loggingIn)
+            .disabled(runner.isBusy)
 
             Button {
-                Task { await appState.loginToTenant(currentTenant, useTerminal: true) }
+                runner.send(.loginInTerminal(currentTenant))
             } label: {
                 Image(systemName: "terminal")
             }
             .buttonStyle(.borderless)
             .help("Login in Terminal")
-            .disabled(session.loginStatus == .loggingIn)
+            .disabled(runner.isBusy)
 
             Button {
                 isExpanded.toggle()
@@ -105,6 +116,26 @@ struct TenantRow: View {
             }
             .buttonStyle(.borderless)
         }
+    }
+
+    // MARK: - Awaiting External Login
+
+    private var awaitingLoginRow: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "hourglass")
+                .foregroundStyle(.orange)
+                .font(.caption)
+            Text("Waiting for login...")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button("Refresh") {
+                runner.send(.refreshAfterExternalLogin(tenantId: tenant.tenantId))
+            }
+            .buttonStyle(.borderless)
+            .font(.caption)
+        }
+        .padding(.leading, 16)
     }
 
     // MARK: - Subscription Picker (all discovered, with checkboxes)
@@ -121,8 +152,8 @@ struct TenantRow: View {
                     .buttonStyle(.borderless)
             }
 
-            let discovered = session.allDiscoveredSubscriptions
-            if session.loginStatus != .loggedIn {
+            let discovered = cache.allDiscoveredSubscriptions
+            if !cache.isLoggedIn {
                 HStack(spacing: 4) {
                     ProgressView().controlSize(.small)
                     Text("Login to discover subscriptions...")
@@ -135,9 +166,9 @@ struct TenantRow: View {
                     .foregroundStyle(.secondary)
             } else {
                 ForEach(discovered, id: \.id) { sub in
-                    let isExposed = appState.isSubscriptionExposed(sub.id, tenantId: tenant.tenantId)
+                    let isExposed = runner.isSubscriptionExposed(sub.id, tenantId: tenant.tenantId)
                     Button {
-                        appState.toggleSubscriptionExposure(sub, tenantId: tenant.tenantId)
+                        runner.send(.toggleSubscriptionExposure(sub, tenantId: tenant.tenantId))
                     } label: {
                         HStack(spacing: 6) {
                             Image(systemName: isExposed ? "checkmark.square.fill" : "square")
@@ -164,10 +195,14 @@ struct TenantRow: View {
     private var subscriptionQuickPick: some View {
         VStack(alignment: .leading, spacing: 2) {
             ForEach(currentTenant.subscriptions, id: \.id) { sub in
-                let isActive = session.activeSubscription?.id == sub.id
+                let isActive = cache.activeSubscription?.id == sub.id
                 HStack(spacing: 6) {
                     Button {
-                        Task { await appState.loginAndSelectSubscription(sub, tenant: currentTenant) }
+                        if cache.isLoggedIn {
+                            runner.send(.selectSubscription(sub, tenantId: tenant.tenantId))
+                        } else {
+                            runner.send(.login(currentTenant))
+                        }
                     } label: {
                         HStack(spacing: 6) {
                             Image(systemName: isActive ? "checkmark.circle.fill" : "circle")
@@ -175,44 +210,59 @@ struct TenantRow: View {
                                 .font(.caption)
                             Text(sub.name)
                                 .font(.callout)
+                            if isActive, let setAt = cache.subscriptionSetAt {
+                                Text(setAt, style: .relative)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.borderless)
-                    .disabled(session.loginStatus == .loggingIn)
+                    .disabled(runner.isBusy)
 
                     Spacer()
 
-                    Button {
-                        appState.openPortal(tenantId: tenant.tenantId, subscriptionId: sub.id)
-                    } label: {
-                        Image(systemName: "globe")
-                            .foregroundStyle(.secondary)
-                            .font(.caption)
+                    // Browser icons for portal
+                    HStack(spacing: 2) {
+                        ForEach(runner.availableBrowsers.prefix(4)) { browser in
+                            Button {
+                                runner.send(.openPortal(
+                                    tenantId: tenant.tenantId,
+                                    subscriptionId: sub.id,
+                                    browserBundleId: browser.id
+                                ))
+                            } label: {
+                                Image(nsImage: BrowserService.icon(for: browser, size: 14))
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Open in \(browser.name)")
+                        }
                     }
-                    .buttonStyle(.borderless)
+
+                    // Default browser fallback
+                    if runner.availableBrowsers.isEmpty {
+                        Button {
+                            runner.send(.openPortalDefault(tenantId: tenant.tenantId, subscriptionId: sub.id))
+                        } label: {
+                            Image(systemName: "globe")
+                                .foregroundStyle(.secondary)
+                                .font(.caption)
+                        }
+                        .buttonStyle(.borderless)
+                    }
                 }
             }
         }
         .padding(.leading, 16)
     }
 
-    // MARK: - Error & Expanded
-
-    @ViewBuilder
-    private var errorRow: some View {
-        if case .failed(let msg) = session.loginStatus {
-            Text(msg)
-                .font(.caption)
-                .foregroundStyle(.red)
-                .lineLimit(3)
-        }
-    }
+    // MARK: - Expanded Content
 
     private var expandedContent: some View {
         VStack(alignment: .leading, spacing: 8) {
             if currentTenant.pim != nil {
-                PIMSection(tenant: currentTenant, session: session, appState: appState)
+                PIMSection(tenant: currentTenant, cache: cache, runner: runner)
             }
         }
         .padding(.leading, 16)

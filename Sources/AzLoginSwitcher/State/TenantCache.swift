@@ -1,5 +1,16 @@
 import Foundation
 
+// MARK: - PIM Role Status
+
+enum PIMRoleStatus: Equatable, Sendable {
+    case idle
+    case activating
+    case active(expires: String?)
+    case failed(String)
+}
+
+// MARK: - Tenant Cache
+
 /// Per-tenant cached data — a projection, not an FSM.
 /// Tracks what we know about each tenant from previous actions.
 struct TenantCache: Sendable {

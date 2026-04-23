@@ -2,8 +2,8 @@ import SwiftUI
 
 struct SubscriptionSection: View {
     let tenant: TenantConfig
-    let session: TenantSession
-    let appState: AppState
+    let cache: TenantCache
+    let runner: ActionRunner
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -18,7 +18,7 @@ struct SubscriptionSection: View {
     }
 
     private func subscriptionRow(_ sub: SubscriptionConfig) -> some View {
-        let isActive = session.activeSubscription?.id == sub.id
+        let isActive = cache.activeSubscription?.id == sub.id
 
         return HStack(spacing: 6) {
             Image(systemName: isActive ? "checkmark.circle.fill" : "circle")
@@ -28,23 +28,48 @@ struct SubscriptionSection: View {
             Text(sub.name)
                 .font(.callout)
 
+            if isActive, let setAt = cache.subscriptionSetAt {
+                Text(setAt, style: .relative)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
             Spacer()
 
             if !isActive {
                 Button("Set Active") {
-                    Task { await appState.setActiveSubscription(sub, tenantId: tenant.tenantId) }
+                    runner.send(.selectSubscription(sub, tenantId: tenant.tenantId))
                 }
                 .buttonStyle(.borderless)
                 .font(.caption)
+                .disabled(runner.isBusy)
             }
 
-            Button {
-                appState.openPortal(tenantId: tenant.tenantId, subscriptionId: sub.id)
-            } label: {
-                Image(systemName: "globe")
+            HStack(spacing: 2) {
+                ForEach(runner.availableBrowsers.prefix(4)) { browser in
+                    Button {
+                        runner.send(.openPortal(
+                            tenantId: tenant.tenantId,
+                            subscriptionId: sub.id,
+                            browserBundleId: browser.id
+                        ))
+                    } label: {
+                        Image(nsImage: BrowserService.icon(for: browser, size: 14))
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Open in \(browser.name)")
+                }
             }
-            .buttonStyle(.borderless)
-            .help("Open Azure Portal")
+
+            if runner.availableBrowsers.isEmpty {
+                Button {
+                    runner.send(.openPortalDefault(tenantId: tenant.tenantId, subscriptionId: sub.id))
+                } label: {
+                    Image(systemName: "globe")
+                }
+                .buttonStyle(.borderless)
+                .help("Open Azure Portal")
+            }
         }
         .padding(.vertical, 2)
     }

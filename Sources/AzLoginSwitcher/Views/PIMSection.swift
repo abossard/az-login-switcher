@@ -2,21 +2,21 @@ import SwiftUI
 
 struct PIMSection: View {
     let tenant: TenantConfig
-    let session: TenantSession
-    let appState: AppState
+    let cache: TenantCache
+    let runner: ActionRunner
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("PIM Roles (\(session.eligiblePIMRoles.count))")
+            Text("PIM Roles (\(cache.eligiblePIMRoles.count))")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            if session.eligiblePIMRoles.isEmpty {
+            if cache.eligiblePIMRoles.isEmpty {
                 Text("No eligible PIM roles")
                     .foregroundStyle(.secondary)
                     .font(.caption)
             } else {
-                ForEach(session.eligiblePIMRoles, id: \.id) { role in
+                ForEach(cache.eligiblePIMRoles, id: \.id) { role in
                     roleRow(role)
                 }
             }
@@ -24,7 +24,8 @@ struct PIMSection: View {
     }
 
     private func roleRow(_ role: PIMEligibleRole) -> some View {
-        let status = session.pimRoleStatuses[role.id] ?? .idle
+        let entry = cache.pimRoleStatuses[role.id]
+        let status = entry?.status ?? .idle
 
         return HStack(spacing: 6) {
             VStack(alignment: .leading, spacing: 2) {
@@ -38,20 +39,21 @@ struct PIMSection: View {
 
             Spacer()
 
-            statusView(for: status, role: role)
+            statusView(for: status, role: role, entry: entry)
         }
         .padding(.vertical, 2)
     }
 
     @ViewBuilder
-    private func statusView(for status: PIMRoleStatus, role: PIMEligibleRole) -> some View {
+    private func statusView(for status: PIMRoleStatus, role: PIMEligibleRole, entry: PIMRoleStatusEntry?) -> some View {
         switch status {
         case .idle:
             Button("Activate") {
-                Task { await appState.activatePIMRole(role, for: tenant) }
+                runner.send(.activatePIM(role, tenant))
             }
             .buttonStyle(.borderless)
             .font(.caption)
+            .disabled(runner.isBusy)
 
         case .activating:
             ProgressView()
@@ -67,6 +69,11 @@ struct PIMSection: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
+                if let updatedAt = entry?.updatedAt {
+                    Text(updatedAt, style: .relative)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
             }
 
         case .failed(let msg):
@@ -76,26 +83,24 @@ struct PIMSection: View {
                     .font(.caption)
                     .help(msg)
                 Button("Retry") {
-                    Task { await appState.activatePIMRole(role, for: tenant) }
+                    runner.send(.activatePIM(role, tenant))
                 }
                 .buttonStyle(.borderless)
                 .font(.caption)
+                .disabled(runner.isBusy)
             }
         }
     }
 
-    /// Extracts the last path component from a roleDefinitionId GUID-style path
     private func displayName(from roleDefinitionId: String) -> String {
         let parts = roleDefinitionId.split(separator: "/")
         return parts.last.map(String.init) ?? "Role"
     }
 
-    /// Show subscription name instead of full ARM scope path
     private func friendlyScope(_ scope: String) -> String {
         let parts = scope.split(separator: "/")
         if let idx = parts.firstIndex(of: "subscriptions"), idx + 1 < parts.count {
             let subId = String(parts[idx + 1])
-            // Try to find subscription name from tenant config
             if let name = tenant.subscriptions.first(where: { $0.id == subId })?.name {
                 return name
             }

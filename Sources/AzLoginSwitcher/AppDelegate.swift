@@ -21,20 +21,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let shell = ShellExecutor()
         let azCLI = AzCLI(shell: shell)
         let pimService = PIMService(shell: shell)
-        let urlOpener = DefaultURLOpener()
         let loginLauncher = TerminalLoginLauncher()
+        let logger = ActionLogger()
         
-        let appState = AppState(
+        let runner = ActionRunner(
             azCLI: azCLI,
             pimService: pimService,
-            urlOpener: urlOpener,
-            loginLauncher: loginLauncher
+            loginLauncher: loginLauncher,
+            logger: logger
         )
         
         popover = NSPopover()
         popover.behavior = .transient
-        popover.contentSize = NSSize(width: 350, height: 400)
-        popover.contentViewController = NSHostingController(rootView: MainView(appState: appState))
+        popover.contentSize = NSSize(width: 380, height: 400)
+        popover.contentViewController = NSHostingController(rootView: MainView(runner: runner))
     }
     
     @objc func togglePopover(_ sender: AnyObject?) {

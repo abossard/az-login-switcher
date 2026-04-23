@@ -1,13 +1,16 @@
 import SwiftUI
 
 struct MainView: View {
-    let appState: AppState
+    let runner: ActionRunner
 
     var body: some View {
         VStack(spacing: 0) {
-            if let error = appState.configError {
+            if runner.isBusy, let action = runner.currentAction {
+                actionProgressBar(action)
+            }
+            if let error = runner.configError {
                 configErrorView(error)
-            } else if appState.config == nil {
+            } else if runner.config == nil {
                 noConfigView
             } else {
                 tenantListView
@@ -15,9 +18,27 @@ struct MainView: View {
             Divider()
             bottomBar
         }
-        .frame(width: 350)
-        .frame(minHeight: 200, maxHeight: 500)
-        .onAppear { appState.loadConfig() }
+        .frame(width: 380)
+        .frame(minHeight: 200, maxHeight: 600)
+        .onAppear { runner.send(.loadConfig) }
+    }
+
+    // MARK: - Action Progress
+
+    private func actionProgressBar(_ action: AzAction) -> some View {
+        HStack(spacing: 6) {
+            ProgressView().controlSize(.small)
+            Text(action.displayName)
+                .font(.caption)
+            if case .running(let step) = action.phase {
+                Text("· \(step)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 6)
+        .background(Color.accentColor.opacity(0.1))
     }
 
     // MARK: - Subviews
@@ -52,9 +73,9 @@ struct MainView: View {
     private var tenantListView: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                if let tenants = appState.config?.tenants {
+                if let tenants = runner.config?.tenants {
                     ForEach(tenants, id: \.tenantId) { tenant in
-                        TenantRow(tenant: tenant, appState: appState)
+                        TenantRow(tenant: tenant, runner: runner)
                         if tenant.tenantId != tenants.last?.tenantId {
                             Divider()
                         }
@@ -67,19 +88,22 @@ struct MainView: View {
 
     private var bottomBar: some View {
         HStack {
-            Button {
-                appState.loadConfig()
-            } label: {
-                Label("Reload Config", systemImage: "arrow.clockwise")
-            }
-            .buttonStyle(.borderless)
+            Button { runner.send(.loadConfig) } label: {
+                Label("Reload", systemImage: "arrow.clockwise")
+            }.buttonStyle(.borderless)
+
+            Button { runner.send(.openLogFolder) } label: {
+                Label("Logs", systemImage: "doc.text")
+            }.buttonStyle(.borderless)
 
             Spacer()
 
-            Button("Quit") {
-                NSApplication.shared.terminate(nil)
+            if let ctx = runner.azureContext.currentUser {
+                Text(ctx).font(.caption2).foregroundStyle(.secondary)
             }
-            .buttonStyle(.borderless)
+
+            Button("Quit") { NSApplication.shared.terminate(nil) }
+                .buttonStyle(.borderless)
         }
         .padding(.horizontal)
         .padding(.vertical, 8)
