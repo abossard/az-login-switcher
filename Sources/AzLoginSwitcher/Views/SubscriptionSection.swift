@@ -54,7 +54,7 @@ struct SubscriptionSection: View {
                             browserBundleId: browser.id
                         ))
                     } label: {
-                        Image(nsImage: BrowserService.icon(for: browser, size: 14))
+                        Image(nsImage: BrowserService.icon(for: browser, size: 18))
                     }
                     .buttonStyle(.borderless)
                     .help("Open in \(browser.name)")

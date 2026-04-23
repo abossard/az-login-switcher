@@ -71,11 +71,23 @@ struct BrowserService {
         NSWorkspace.shared.open(url)
     }
     
-    /// Get browser icon (16x16) for display in UI — call from view layer only
+    /// Get browser icon for display in UI — properly rendered at target size
     @MainActor
     static func icon(for browser: BrowserInfo, size: CGFloat = 16) -> NSImage {
-        let icon = NSWorkspace.shared.icon(forFile: browser.appURL.path)
-        icon.size = NSSize(width: size, height: size)
-        return icon
+        let original = NSWorkspace.shared.icon(forFile: browser.appURL.path)
+        let targetSize = NSSize(width: size, height: size)
+        
+        let resized = NSImage(size: targetSize)
+        resized.lockFocus()
+        NSGraphicsContext.current?.imageInterpolation = .high
+        original.draw(
+            in: NSRect(origin: .zero, size: targetSize),
+            from: NSRect(origin: .zero, size: original.size),
+            operation: .copy,
+            fraction: 1.0
+        )
+        resized.unlockFocus()
+        resized.isTemplate = false
+        return resized
     }
 }
