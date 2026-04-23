@@ -17,6 +17,7 @@ enum PIMRoleStatus: Equatable, Sendable {
 
 struct TenantSession: Sendable {
     var loginStatus: LoginStatus = .idle
+    var allDiscoveredSubscriptions: [AzSubscription] = []  // all subs from az account list
     var subscriptions: [AzSubscription] = []
     var activeSubscription: AzSubscription? = nil
     var eligiblePIMRoles: [PIMEligibleRole] = []
@@ -81,9 +82,7 @@ final class AppState {
                     command: "az",
                     arguments: ["login", "--tenant", tenant.tenantId]
                 )
-            } catch {
-                // Can't reliably track terminal login result
-            }
+            } catch {}
             tenantSessions[tenant.tenantId]!.loginStatus = .loggedIn
             return
         }
@@ -92,17 +91,15 @@ final class AppState {
             try await azCLI.login(tenantId: tenant.tenantId)
             tenantSessions[tenant.tenantId]!.loginStatus = .loggedIn
 
-            // Auto-discover subscriptions if filter is set and no subscriptions configured
-            var activeTenant = tenant
-            if let filter = tenant.subscriptionFilter, !filter.isEmpty {
-                let discovered = await discoverSubscriptions(tenantId: tenant.tenantId, filter: filter)
-                if !discovered.isEmpty {
-                    activeTenant = updateTenantSubscriptions(tenant: tenant, discovered: discovered)
-                }
-            }
+            // Always fetch all subscriptions for this tenant
+            let allSubs = try await azCLI.listSubscriptions()
+            let tenantSubs = allSubs
+                .filter { $0.tenantId == tenant.tenantId }
+                .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            tenantSessions[tenant.tenantId]!.allDiscoveredSubscriptions = tenantSubs
 
-            // Auto-select first subscription
-            if let firstSub = activeTenant.subscriptions.first {
+            // Auto-select first exposed subscription (from config)
+            if let firstSub = tenant.subscriptions.first {
                 try await azCLI.setSubscription(id: firstSub.id)
                 tenantSessions[tenant.tenantId]!.activeSubscription = AzSubscription(
                     id: firstSub.id,
@@ -119,22 +116,17 @@ final class AppState {
             let user = try await azCLI.getSignedInUser()
             tenantSessions[tenant.tenantId]!.signedInUser = user
 
-            // Discover PIM roles for each subscription
+            // Discover PIM roles for exposed subscriptions
             var allRoles: [PIMEligibleRole] = []
-            for sub in activeTenant.subscriptions {
+            for sub in tenant.subscriptions {
                 do {
                     let roles = try await pimService.discoverEligibleRoles(subscriptionId: sub.id)
                     allRoles.append(contentsOf: roles)
-                } catch {
-                    // Continue discovering roles for remaining subscriptions
-                }
+                } catch {}
             }
-
             tenantSessions[tenant.tenantId]!.eligiblePIMRoles = allRoles
             var statuses: [String: PIMRoleStatus] = [:]
-            for role in allRoles {
-                statuses[role.id] = .idle
-            }
+            for role in allRoles { statuses[role.id] = .idle }
             tenantSessions[tenant.tenantId]!.pimRoleStatuses = statuses
 
         } catch {
@@ -217,44 +209,28 @@ final class AppState {
         return String(components[index + 1])
     }
 
-    /// Discover subscriptions via `az account list`, filter by name prefix
-    private func discoverSubscriptions(tenantId: String, filter: String) async -> [SubscriptionConfig] {
-        do {
-            let allSubs = try await azCLI.listSubscriptions()
-            let matching = allSubs
-                .filter { $0.tenantId == tenantId && $0.name.localizedCaseInsensitiveContains(filter) }
-                .map { SubscriptionConfig(name: $0.name, id: $0.id) }
-            return matching
-        } catch {
-            return []
+    // MARK: - Subscription Picker
+
+    /// Toggle whether a subscription is exposed (shown in quick-pick). Saves to config YAML.
+    func toggleSubscriptionExposure(_ sub: AzSubscription, tenantId: String) {
+        guard var currentConfig = config,
+              let idx = currentConfig.tenants.firstIndex(where: { $0.tenantId == tenantId }) else { return }
+
+        var tenant = currentConfig.tenants[idx]
+        if let existingIdx = tenant.subscriptions.firstIndex(where: { $0.id == sub.id }) {
+            tenant.subscriptions.remove(at: existingIdx)
+        } else {
+            tenant.subscriptions.append(SubscriptionConfig(name: sub.name, id: sub.id))
         }
+        currentConfig.tenants[idx] = tenant
+        config = currentConfig
+        ConfigLoader.saveConfig(currentConfig)
     }
 
-    /// Merge discovered subscriptions into tenant config and save back to YAML
-    private func updateTenantSubscriptions(tenant: TenantConfig, discovered: [SubscriptionConfig]) -> TenantConfig {
-        guard var currentConfig = config else { return tenant }
-
-        // Merge: keep existing, add new discoveries
-        var existingIds = Set(tenant.subscriptions.map(\.id))
-        var merged = tenant.subscriptions
-        for sub in discovered {
-            if !existingIds.contains(sub.id) {
-                merged.append(sub)
-                existingIds.insert(sub.id)
-            }
-        }
-
-        var updatedTenant = tenant
-        updatedTenant.subscriptions = merged
-
-        // Update config in memory
-        if let idx = currentConfig.tenants.firstIndex(where: { $0.tenantId == tenant.tenantId }) {
-            currentConfig.tenants[idx] = updatedTenant
-            config = currentConfig
-            // Persist to disk
-            ConfigLoader.saveConfig(currentConfig)
-        }
-
-        return updatedTenant
+    /// Check if a subscription is currently exposed in config
+    func isSubscriptionExposed(_ subId: String, tenantId: String) -> Bool {
+        guard let currentConfig = config,
+              let tenant = currentConfig.tenants.first(where: { $0.tenantId == tenantId }) else { return false }
+        return tenant.subscriptions.contains { $0.id == subId }
     }
 }

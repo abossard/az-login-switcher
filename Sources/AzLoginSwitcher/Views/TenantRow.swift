@@ -4,12 +4,12 @@ struct TenantRow: View {
     let tenant: TenantConfig
     let appState: AppState
     @State private var isExpanded: Bool = false
+    @State private var showingPicker: Bool = false
 
     private var session: TenantSession {
         appState.session(for: tenant.tenantId)
     }
 
-    /// True if a different tenant is currently logged in
     private var anotherTenantIsActive: Bool {
         appState.tenantSessions.contains { key, value in
             key != tenant.tenantId && value.loginStatus == .loggedIn
@@ -25,13 +25,18 @@ struct TenantRow: View {
         }
     }
 
+    private var currentTenant: TenantConfig {
+        appState.config?.tenants.first { $0.tenantId == tenant.tenantId } ?? tenant
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             headerRow
             errorRow
 
-            // Show subscriptions directly for one-click login+select
-            if !tenant.subscriptions.isEmpty {
+            if showingPicker && session.loginStatus == .loggedIn {
+                subscriptionPicker
+            } else if !currentTenant.subscriptions.isEmpty {
                 subscriptionQuickPick
             }
 
@@ -46,7 +51,7 @@ struct TenantRow: View {
         }
     }
 
-    // MARK: - Subviews
+    // MARK: - Header
 
     private var headerRow: some View {
         HStack(spacing: 8) {
@@ -64,14 +69,24 @@ struct TenantRow: View {
 
             Spacer()
 
+            if session.loginStatus == .loggedIn {
+                Button {
+                    showingPicker.toggle()
+                } label: {
+                    Image(systemName: "gearshape")
+                }
+                .buttonStyle(.borderless)
+                .help("Select subscriptions to show")
+            }
+
             Button("Login") {
-                Task { await appState.loginToTenant(tenant) }
+                Task { await appState.loginToTenant(currentTenant) }
             }
             .buttonStyle(.borderless)
             .disabled(session.loginStatus == .loggingIn)
 
             Button {
-                Task { await appState.loginToTenant(tenant, useTerminal: true) }
+                Task { await appState.loginToTenant(currentTenant, useTerminal: true) }
             } label: {
                 Image(systemName: "terminal")
             }
@@ -88,36 +103,90 @@ struct TenantRow: View {
         }
     }
 
-    /// Quick-pick subscriptions — click to login + select in one action
+    // MARK: - Subscription Picker (all discovered, with checkboxes)
+
+    private var subscriptionPicker: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text("Select subscriptions")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Done") { showingPicker = false }
+                    .font(.caption)
+                    .buttonStyle(.borderless)
+            }
+
+            let discovered = session.allDiscoveredSubscriptions
+            if discovered.isEmpty {
+                Text("No subscriptions found")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(discovered, id: \.id) { sub in
+                    let isExposed = appState.isSubscriptionExposed(sub.id, tenantId: tenant.tenantId)
+                    Button {
+                        appState.toggleSubscriptionExposure(sub, tenantId: tenant.tenantId)
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: isExposed ? "checkmark.square.fill" : "square")
+                                .foregroundStyle(isExposed ? .blue : .secondary)
+                                .font(.caption)
+                            Text(sub.name)
+                                .font(.callout)
+                            Spacer()
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.borderless)
+                }
+            }
+        }
+        .padding(.leading, 16)
+        .padding(.vertical, 4)
+        .background(Color.primary.opacity(0.03))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    // MARK: - Quick-pick (exposed subscriptions only)
+
     private var subscriptionQuickPick: some View {
         VStack(alignment: .leading, spacing: 2) {
-            ForEach(tenant.subscriptions, id: \.id) { sub in
+            ForEach(currentTenant.subscriptions, id: \.id) { sub in
                 let isActive = session.activeSubscription?.id == sub.id
-                Button {
-                    Task { await appState.loginAndSelectSubscription(sub, tenant: tenant) }
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: isActive ? "checkmark.circle.fill" : "circle")
-                            .foregroundStyle(isActive ? .green : .secondary)
-                            .font(.caption)
-                        Text(sub.name)
-                            .font(.callout)
-                        Spacer()
+                HStack(spacing: 6) {
+                    Button {
+                        Task { await appState.loginAndSelectSubscription(sub, tenant: currentTenant) }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: isActive ? "checkmark.circle.fill" : "circle")
+                                .foregroundStyle(isActive ? .green : .secondary)
+                                .font(.caption)
+                            Text(sub.name)
+                                .font(.callout)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(session.loginStatus == .loggingIn)
+
+                    Spacer()
+
+                    Button {
+                        appState.openPortal(tenantId: tenant.tenantId, subscriptionId: sub.id)
+                    } label: {
                         Image(systemName: "globe")
                             .foregroundStyle(.secondary)
                             .font(.caption)
                     }
-                    .contentShape(Rectangle())
+                    .buttonStyle(.borderless)
                 }
-                .buttonStyle(.borderless)
-                .simultaneousGesture(TapGesture().modifiers(.option).onEnded {
-                    appState.openPortal(tenantId: tenant.tenantId, subscriptionId: sub.id)
-                })
-                .disabled(session.loginStatus == .loggingIn)
             }
         }
         .padding(.leading, 16)
     }
+
+    // MARK: - Error & Expanded
 
     @ViewBuilder
     private var errorRow: some View {
@@ -131,8 +200,8 @@ struct TenantRow: View {
 
     private var expandedContent: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if tenant.pim != nil {
-                PIMSection(tenant: tenant, session: session, appState: appState)
+            if currentTenant.pim != nil {
+                PIMSection(tenant: currentTenant, session: session, appState: appState)
             }
         }
         .padding(.leading, 16)
