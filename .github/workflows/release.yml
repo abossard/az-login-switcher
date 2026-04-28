@@ -39,10 +39,8 @@ jobs:
 
       - name: Create DMG
         run: |
-          mkdir -p dmg-stage
-          cp -R build/AzLoginSwitcher.app dmg-stage/
-          ln -s /Applications dmg-stage/Applications
-          hdiutil create -volname "AzLoginSwitcher" -srcfolder dmg-stage -ov -format UDZO AzLoginSwitcher.dmg
+          chmod +x scripts/create_dmg.sh
+          scripts/create_dmg.sh
 
       - name: Set release tag
         id: tag
