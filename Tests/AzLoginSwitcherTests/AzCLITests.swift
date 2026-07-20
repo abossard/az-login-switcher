@@ -149,6 +149,24 @@ struct AzCLITests {
         #expect(mock.lastExecutable == "/usr/local/bin/az")
         #expect(mock.lastArguments == ["login", "--tenant", tenantId])
     }
+
+    @Test("login passes selected browser only to the login child")
+    func testLoginSelectedBrowserArguments() async throws {
+        let mock = MockShellExecutor()
+        mock.resultToReturn = ShellResult(stdout: "Logged in", stderr: "", exitCode: 0)
+
+        let azCLI = AzCLI(shell: mock, azPath: "/usr/local/bin/az")
+        try await azCLI.login(tenantId: "tenant-1", browserBundleId: "com.google.Chrome")
+
+        #expect(mock.lastExecutable == "/usr/bin/env")
+        #expect(mock.lastArguments == [
+            "BROWSER=/usr/bin/open -b com.google.Chrome %s",
+            "/usr/local/bin/az",
+            "login",
+            "--tenant",
+            "tenant-1",
+        ])
+    }
     
     @Test("login throws commandFailed on non-zero exit code")
     func testLoginCommandFailed() async throws {
@@ -158,7 +176,7 @@ struct AzCLITests {
         let azCLI = AzCLI(shell: mock, azPath: "/usr/local/bin/az")
         
         await #expect(throws: AzCLIError.self) {
-            try await azCLI.login(tenantId: "tenant-1")
+            try await azCLI.login(tenantId: "tenant-1", browserBundleId: "com.microsoft.edgemac")
         }
     }
     

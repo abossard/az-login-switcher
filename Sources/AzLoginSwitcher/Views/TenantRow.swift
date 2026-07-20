@@ -13,13 +13,16 @@ struct TenantRow: View {
     }
 
     private var anotherTenantIsActive: Bool {
-        runner.tenantCaches.contains { $0.key != tenant.tenantId && $0.value.effectivelyLoggedIn }
+        runner.azureContext.isAuthenticated && !runner.isActiveTenant(tenant.tenantId)
     }
 
     private var statusColor: Color {
-        if cache.effectivelyLoggedIn { return .green }
-        if anotherTenantIsActive { return .yellow }
-        return .gray
+        switch runner.tenantStatus(for: tenant.tenantId) {
+        case .active: return .green
+        case .remembered: return .yellow
+        case .unknown:
+            return anotherTenantIsActive ? .yellow : .gray
+        }
     }
 
     var body: some View {
@@ -32,7 +35,7 @@ struct TenantRow: View {
                 subscriptionQuickPick
             }
 
-            if cache.effectivelyLoggedIn {
+            if runner.isActiveTenant(tenant.tenantId) {
                 expandedContent
             }
         }
@@ -49,7 +52,7 @@ struct TenantRow: View {
             Text(tenant.name)
                 .fontWeight(.bold)
 
-            if cache.effectivelyLoggedIn, let loginAt = cache.loginAt {
+            if runner.isActiveTenant(tenant.tenantId), let loginAt = cache.loginAt {
                 RelativeTimeText(date: loginAt)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -59,7 +62,7 @@ struct TenantRow: View {
 
             Button {
                 showingPicker.toggle()
-                if showingPicker && !cache.effectivelyLoggedIn {
+                if showingPicker && !runner.isActiveTenant(tenant.tenantId) {
                     runner.send(.login(currentTenant))
                 }
             } label: {
@@ -69,7 +72,7 @@ struct TenantRow: View {
             .help("Select subscriptions to show")
             .disabled(runner.isBusy)
 
-            if cache.effectivelyLoggedIn {
+            if runner.isActiveTenant(tenant.tenantId) {
                 // No per-tenant logout — use global logout in bottom bar
             }
 
@@ -98,7 +101,7 @@ struct TenantRow: View {
             }
 
             let discovered = cache.allDiscoveredSubscriptions
-            if !cache.effectivelyLoggedIn {
+            if !runner.isActiveTenant(tenant.tenantId) {
                 HStack(spacing: 4) {
                     ProgressView().controlSize(.small)
                     Text("Login to discover subscriptions...")
@@ -186,10 +189,10 @@ struct TenantRow: View {
                 let isActive = cache.activeSubscription?.id == sub.id
                 HStack(spacing: 6) {
                     Button {
-                        if cache.effectivelyLoggedIn {
+                        if runner.isActiveTenant(tenant.tenantId) {
                             runner.send(.selectSubscription(sub, tenantId: tenant.tenantId))
                         } else {
-                            runner.send(.login(currentTenant))
+                            runner.send(.loginAndSelect(sub, tenant: currentTenant))
                         }
                     } label: {
                         HStack(spacing: 6) {

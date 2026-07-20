@@ -176,6 +176,58 @@ final class ConfigModelsTests: XCTestCase {
             XCTAssertEqual(decoded, expected, "\(testCase.name) failed")
         }
     }
+
+    func testLoginBrowserDecoding() throws {
+        let cases: [(rawValue: String, expected: LoginBrowser)] = [
+            ("safari", .safari),
+            ("chrome", .chrome),
+            ("edge", .edge),
+            ("firefox", .firefox),
+        ]
+
+        for testCase in cases {
+            let yaml = """
+            loginBrowser: \(testCase.rawValue)
+            tenants: []
+            """
+
+            let config = try YAMLDecoder().decode(AppConfig.self, from: yaml)
+
+            XCTAssertEqual(config.loginBrowser, testCase.expected)
+        }
+    }
+
+    func testExistingConfigWithoutLoginBrowserDecodesNil() throws {
+        let yaml = """
+        tenants:
+          - name: "Existing Tenant"
+            tenantId: "tenant-id"
+            subscriptions: []
+        """
+
+        let config = try YAMLDecoder().decode(AppConfig.self, from: yaml)
+
+        XCTAssertNil(config.loginBrowser)
+    }
+
+    func testUnsupportedLoginBrowserIsParseError() throws {
+        let configURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent(".unsupported-login-browser-\(UUID().uuidString).yaml")
+        let yaml = """
+        loginBrowser: brave
+        tenants: []
+        """
+        try yaml.write(to: configURL, atomically: false, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: configURL) }
+
+        let result = ConfigLoader.loadConfig(from: configURL.path)
+
+        guard case .failure(.parseError) = result else {
+            XCTFail("Expected parseError, got \(result)")
+            return
+        }
+    }
     
     // MARK: - Validation Tests
     
@@ -307,7 +359,7 @@ final class ConfigModelsTests: XCTestCase {
         let invalidConfigYAML = """
         tenants:
           - name: "Empty Subs"
-            tenantId: "test-id"
+            tenantId: ""
             subscriptions: []
         """
         try invalidConfigYAML.write(to: tempFile, atomically: true, encoding: .utf8)

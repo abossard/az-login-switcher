@@ -31,6 +31,7 @@ open build/AzLoginSwitcher.app
 Copy `example-config.yaml` to `~/.az-login-switcher.yaml` and edit with your tenant and subscription details.
 
 **Configuration fields:**
+- `loginBrowser` (optional) — Browser used for interactive Azure CLI login: `safari`, `chrome`, `edge`, or `firefox`. When omitted, installed Edge is preferred. If the selected browser is unavailable, or Edge is unavailable when omitted, Azure CLI uses the system default browser.
 - `tenants` — List of Azure tenants to manage
   - `name` — Friendly name for the tenant
   - `tenantId` — Azure AD tenant ID (UUID)

@@ -1,6 +1,11 @@
 # az-login-switcher configuration
 # Copy this file to ~/.az-login-switcher.yaml and edit with your tenant/subscription details
 
+# Optional Azure CLI login browser: safari, chrome, edge, or firefox.
+# When omitted, installed Edge is preferred. An unavailable selection, or no
+# installed Edge when omitted, preserves the system default browser.
+# loginBrowser: edge
+
 tenants:
   - name: "Contoso Development"
     tenantId: "12345678-1234-1234-1234-123456789abc"

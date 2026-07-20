@@ -7,21 +7,24 @@ enum AzActionKind: Equatable, Sendable {
     case logout(tenantId: String, tenantName: String)
     case selectSubscription(subscriptionId: String, subscriptionName: String, tenantId: String)
     case activatePIM(roleId: String, roleName: String, subscriptionId: String, tenantId: String)
-    
+    case loginAndSelect(subscriptionId: String, subscriptionName: String, tenantId: String, tenantName: String)
+
     var displayName: String {
         switch self {
         case .login(_, let name): return "Login to \(name)"
         case .logout(_, let name): return "Logout from \(name)"
         case .selectSubscription(_, let name, _): return "Select \(name)"
         case .activatePIM(_, let name, _, _): return "Activate \(name)"
+        case .loginAndSelect(_, let name, _, let tenant): return "Login to \(tenant) & select \(name)"
         }
     }
-    
+
     var tenantId: String {
         switch self {
         case .login(let id, _), .logout(let id, _): return id
         case .selectSubscription(_, _, let id): return id
         case .activatePIM(_, _, _, let id): return id
+        case .loginAndSelect(_, _, let id, _): return id
         }
     }
 }

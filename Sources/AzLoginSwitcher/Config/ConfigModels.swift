@@ -1,10 +1,19 @@
 import Foundation
 
+public enum LoginBrowser: String, Codable, Equatable, Sendable {
+    case safari
+    case chrome
+    case edge
+    case firefox
+}
+
 public struct AppConfig: Codable, Equatable, Sendable {
     public var tenants: [TenantConfig]
+    public let loginBrowser: LoginBrowser?
     
-    public init(tenants: [TenantConfig]) {
+    public init(tenants: [TenantConfig], loginBrowser: LoginBrowser? = nil) {
         self.tenants = tenants
+        self.loginBrowser = loginBrowser
     }
 }
 

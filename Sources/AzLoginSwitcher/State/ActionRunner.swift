@@ -8,6 +8,14 @@ enum FSMState: Equatable {
     case busy(AzAction)
 }
 
+// MARK: - Tenant Status
+
+enum TenantStatus: Equatable {
+    case active      // this tenant is the current az CLI context
+    case remembered  // has cached session data but not current
+    case unknown     // no cached data
+}
+
 // MARK: - Events
 
 enum AppEvent: Sendable {
@@ -22,6 +30,7 @@ enum AppEvent: Sendable {
     case openPortalDefault(tenantId: String, subscriptionId: String)
     case toggleSubscriptionExposure(AzSubscription, tenantId: String)
     case toggleAutoOpenBrowser(String)  // browser bundle ID
+    case loginAndSelect(SubscriptionConfig, tenant: TenantConfig)
     case openLogFolder
     case reloadBrowsers
 }
@@ -56,10 +65,18 @@ final class ActionRunner {
     private let logger: ActionLogger
     private var currentTask: Task<Void, Never>?
 
-    init(azCLI: AzCLI, pimService: PIMService, logger: ActionLogger) {
+    init(
+        azCLI: AzCLI,
+        pimService: PIMService,
+        logger: ActionLogger,
+        config: AppConfig? = nil,
+        availableBrowsers: [BrowserInfo] = []
+    ) {
         self.azCLI = azCLI
         self.pimService = pimService
         self.logger = logger
+        self.config = config
+        self.availableBrowsers = availableBrowsers
     }
 
     // MARK: - Single Entry Point
@@ -73,6 +90,20 @@ final class ActionRunner {
             guard !isBusy else { return }
             startAction(.login(tenantId: tenant.tenantId, tenantName: tenant.name)) { [self] action in
                 await self.executeLogin(action: action, tenant: tenant)
+            }
+
+        case .loginAndSelect(let sub, let tenant):
+            guard !isBusy else { return }
+            if isActiveTenant(tenant.tenantId) {
+                // Already active — just select subscription
+                startAction(.selectSubscription(subscriptionId: sub.id, subscriptionName: sub.name, tenantId: tenant.tenantId)) { [self] action in
+                    await self.executeSelectSubscription(action: action, subscription: sub, tenantId: tenant.tenantId)
+                }
+            } else {
+                // Need to login first, then select the specific subscription
+                startAction(.loginAndSelect(subscriptionId: sub.id, subscriptionName: sub.name, tenantId: tenant.tenantId, tenantName: tenant.name)) { [self] action in
+                    await self.executeLoginAndSelect(action: action, tenant: tenant, targetSubscription: sub)
+                }
             }
 
         case .logout(let tenantId):
@@ -157,6 +188,8 @@ final class ActionRunner {
         }
         availableBrowsers = BrowserService.installedBrowsers()
         restoreState()
+        // Probe live az CLI to get actual context (persisted state may be stale)
+        Task { await refreshAzureContext() }
     }
 
     // MARK: - Action Lifecycle
@@ -215,6 +248,14 @@ final class ActionRunner {
         return result
     }
 
+    private func authenticate(tenantId: String) async throws {
+        let browser = BrowserService.resolveLoginBrowser(
+            configured: config?.loginBrowser,
+            installedBrowsers: availableBrowsers
+        )
+        try await azCLI.login(tenantId: tenantId, browserBundleId: browser?.id)
+    }
+
     // MARK: - Login Workflow
 
     private func executeLogin(action: AzAction, tenant: TenantConfig) async {
@@ -223,14 +264,12 @@ final class ActionRunner {
 
         updatePhase("Authenticating...")
         do {
-            try await azCLI.login(tenantId: tenantId)
+            try await authenticate(tenantId: tenantId)
         } catch {
-            tenantCaches[tenantId]!.isLoggedIn = false
             completeAction(phase: .failed("Login failed: \(error.localizedDescription)"))
             return
         }
 
-        tenantCaches[tenantId]!.isLoggedIn = true
         tenantCaches[tenantId]!.loginAt = Date()
 
         updatePhase("Fetching subscriptions...")
@@ -267,7 +306,7 @@ final class ActionRunner {
         }
 
         var pimIssues: [String] = []
-        if !tenant.subscriptions.isEmpty {
+        if tenant.pim != nil && !tenant.subscriptions.isEmpty {
             updatePhase("Discovering PIM roles...")
             var allRoles: [PIMEligibleRole] = []
             for sub in tenant.subscriptions {
@@ -290,6 +329,49 @@ final class ActionRunner {
         } else {
             completeAction(phase: .partialSuccess(pimIssues.joined(separator: "; ")))
         }
+    }
+
+    // MARK: - Login and Select Workflow
+
+    private func executeLoginAndSelect(action: AzAction, tenant: TenantConfig, targetSubscription: SubscriptionConfig) async {
+        let tenantId = tenant.tenantId
+        ensureCache(for: tenantId)
+
+        updatePhase("Authenticating...")
+        do {
+            try await authenticate(tenantId: tenantId)
+        } catch {
+            completeAction(phase: .failed("Login failed: \(error.localizedDescription)"))
+            return
+        }
+        tenantCaches[tenantId]!.loginAt = Date()
+
+        updatePhase("Fetching subscriptions...")
+        do {
+            let allSubs = try await azCLI.listSubscriptions()
+            let tenantSubs = allSubs.filter { $0.tenantId == tenantId }
+                .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            tenantCaches[tenantId]!.allDiscoveredSubscriptions = tenantSubs
+        } catch { /* partial */ }
+
+        updatePhase("Setting subscription...")
+        do {
+            try await azCLI.setSubscription(id: targetSubscription.id)
+            tenantCaches[tenantId]!.activeSubscription = AzSubscription(
+                id: targetSubscription.id, name: targetSubscription.name, tenantId: tenantId,
+                isDefault: true, state: "Enabled", homeTenantId: nil, tenantDisplayName: nil
+            )
+            tenantCaches[tenantId]!.subscriptionSetAt = Date()
+        } catch { /* non-fatal */ }
+
+        updatePhase("Loading user info...")
+        do {
+            let user = try await azCLI.getSignedInUser()
+            tenantCaches[tenantId]!.signedInUser = user
+        } catch { /* non-fatal */ }
+
+        // Skip PIM discovery for loginAndSelect — keep it focused
+        completeAction(phase: .succeeded)
     }
 
     // MARK: - Logout
@@ -349,7 +431,6 @@ final class ActionRunner {
             tenantCaches[tid] = TenantCache()
         }
         azureContext = .empty
-        persistState()
         completeAction(phase: .succeeded)
     }
 
@@ -489,6 +570,16 @@ final class ActionRunner {
         tenantCaches[tenantId] ?? TenantCache()
     }
 
+    func isActiveTenant(_ tenantId: String) -> Bool {
+        azureContext.currentTenantId == tenantId
+    }
+
+    func tenantStatus(for tenantId: String) -> TenantStatus {
+        if azureContext.currentTenantId == tenantId { return .active }
+        if tenantCaches[tenantId] != nil, tenantCaches[tenantId]!.loginAt != nil { return .remembered }
+        return .unknown
+    }
+
     func isSubscriptionExposed(_ subId: String, tenantId: String) -> Bool {
         config?.tenants.first(where: { $0.tenantId == tenantId })?.subscriptions.contains { $0.id == subId } ?? false
     }
@@ -505,15 +596,10 @@ final class ActionRunner {
         state.save()
     }
 
-    /// Restore state from disk, marking stale logins
+    /// Restore state from disk
     func restoreState() {
         guard let state = PersistedState.load() else { return }
         tenantCaches = state.tenantCaches
         azureContext = state.azureContext
-        
-        // Mark stale logins
-        for (tid, cache) in tenantCaches where cache.isStale && cache.isLoggedIn {
-            tenantCaches[tid]!.isLoggedIn = false
-        }
     }
 }

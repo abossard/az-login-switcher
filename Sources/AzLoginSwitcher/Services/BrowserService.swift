@@ -18,6 +18,17 @@ enum BrowserError: Error, LocalizedError {
     }
 }
 
+extension LoginBrowser {
+    var bundleIdentifier: String {
+        switch self {
+        case .safari: "com.apple.Safari"
+        case .chrome: "com.google.Chrome"
+        case .edge: "com.microsoft.edgemac"
+        case .firefox: "org.mozilla.firefox"
+        }
+    }
+}
+
 /// Detects installed browsers and opens URLs in specific browsers.
 /// Icons are NOT part of BrowserInfo (NSImage is not Sendable).
 /// Views resolve icons via BrowserService.icon(for:) on @MainActor.
@@ -25,11 +36,19 @@ struct BrowserService {
     
     /// Preferred browsers to show (in order). Only these are displayed.
     private static let preferredBrowserIds: [String] = [
-        "com.apple.Safari",
-        "com.google.Chrome",
-        "com.microsoft.edgemac",
-        "org.mozilla.firefox",
+        LoginBrowser.safari.bundleIdentifier,
+        LoginBrowser.chrome.bundleIdentifier,
+        LoginBrowser.edge.bundleIdentifier,
+        LoginBrowser.firefox.bundleIdentifier,
     ]
+
+    static func resolveLoginBrowser(
+        configured: LoginBrowser?,
+        installedBrowsers: [BrowserInfo]
+    ) -> BrowserInfo? {
+        let selectedBrowser = configured ?? .edge
+        return installedBrowsers.first { $0.id == selectedBrowser.bundleIdentifier }
+    }
 
     /// Installed browsers from the preferred list, in preferred order
     @MainActor

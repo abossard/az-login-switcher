@@ -42,10 +42,26 @@ final class AzCLI: Sendable {
         self.azPath = azPath ?? ShellExecutor.resolveAzPath() ?? "/opt/homebrew/bin/az"
     }
     
-    func login(tenantId: String) async throws {
+    func login(tenantId: String, browserBundleId: String? = nil) async throws {
+        let executable: String
+        let arguments: [String]
+        if let browserBundleId {
+            executable = "/usr/bin/env"
+            arguments = [
+                "BROWSER=/usr/bin/open -b \(browserBundleId) %s",
+                azPath,
+                "login",
+                "--tenant",
+                tenantId,
+            ]
+        } else {
+            executable = azPath
+            arguments = ["login", "--tenant", tenantId]
+        }
+
         let result = try await shell.run(
-            executable: azPath,
-            arguments: ["login", "--tenant", tenantId]
+            executable: executable,
+            arguments: arguments
         )
         
         guard result.exitCode == 0 else {
