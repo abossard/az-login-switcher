@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import Testing
 @testable import AzLoginSwitcher
 
@@ -28,7 +29,42 @@ final class SequentialMockShellExecutor: ShellExecuting, @unchecked Sendable {
     }
 }
 
+private actor SuspendedDiscoveryShell: ShellExecuting {
+    private var pending: [Int: CheckedContinuation<ShellResult, Never>] = [:]
+    private var callCount = 0
+
+    func run(executable: String, arguments: [String]) async throws -> ShellResult {
+        callCount += 1
+        let call = callCount
+        return await withCheckedContinuation { pending[call] = $0 }
+    }
+
+    func waitForCall(_ count: Int) async throws {
+        let deadline = Date().addingTimeInterval(5)
+        while callCount < count && Date() < deadline {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        try #require(callCount >= count)
+    }
+
+    func resolve(call: Int) throws {
+        let pendingContinuation = pending.removeValue(forKey: call)
+        let continuation = try #require(pendingContinuation)
+        continuation.resume(returning: ShellResult(
+            stdout: #"{"value":[{"tenantId":"tenant-\#(call)"}]}"#,
+            stderr: "", exitCode: 0
+        ))
+    }
+}
+
 // MARK: - Test Helpers
+
+private let testStorageDirectory: URL = {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("az-login-switcher-tests-\(UUID().uuidString)")
+    atexit { try? FileManager.default.removeItem(at: testStorageDirectory) }
+    return directory
+}()
 
 /// Creates an ActionRunner wired to a mock shell, suitable for testing.
 /// Returns the runner and the mock shell for inspection.
@@ -36,17 +72,21 @@ final class SequentialMockShellExecutor: ShellExecuting, @unchecked Sendable {
 private func makeTestRunner(
     shell: ShellExecuting,
     config: AppConfig? = nil,
-    availableBrowsers: [BrowserInfo] = []
+    availableBrowsers: [BrowserInfo] = [],
+    storageDirectory: URL? = nil
 ) -> ActionRunner {
+    let directory = storageDirectory ?? testStorageDirectory.appendingPathComponent(UUID().uuidString)
     let azCLI = AzCLI(shell: shell, azPath: "/usr/local/bin/az")
     let pimService = PIMService(shell: shell, azPath: "/usr/local/bin/az")
-    let logger = ActionLogger(maxAgeDays: 0)
+    let logger = ActionLogger(maxAgeDays: 0, logDirectoryURL: directory.appendingPathComponent("logs"))
     return ActionRunner(
         azCLI: azCLI,
         pimService: pimService,
         logger: logger,
         config: config,
-        availableBrowsers: availableBrowsers
+        availableBrowsers: availableBrowsers,
+        configPath: directory.appendingPathComponent("config.yaml").path,
+        statePath: directory.appendingPathComponent("state.json").path
     )
 }
 
@@ -85,6 +125,482 @@ private func waitForIdle(_ runner: ActionRunner, timeout: TimeInterval = 5.0) as
     let deadline = Date().addingTimeInterval(timeout)
     while runner.isBusy && Date() < deadline {
         try? await Task.sleep(nanoseconds: 50_000_000) // 50ms
+    }
+}
+
+@Suite("ActionRunner - Tenant Discovery")
+struct TenantDiscoveryTests {
+    private let tenantJSON = """
+    {"value":[
+      {"tenantId":"existing","displayName":"Azure name"},
+      {"tenantId":"new-a","displayName":"New A"},
+      {"tenantId":"new-b","defaultDomain":"new-b.example.com"}
+    ]}
+    """
+
+    @Test("discovery saves only selected tenants and preserves the latest configuration",
+          arguments: [Set(["new-a"]), Set(["new-a", "new-b"])])
+    @MainActor
+    func selectedTenantImport(selectedIds: Set<String>) async throws {
+        let directory = testStorageDirectory.appendingPathComponent(UUID().uuidString)
+        let shell = SequentialMockShellExecutor(results: [
+            ShellResult(stdout: tenantJSON, stderr: "", exitCode: 0),
+            ShellResult(stdout: tenantJSON, stderr: "", exitCode: 0),
+        ])
+        let existingTenant = TenantConfig(
+            name: "Custom name",
+            tenantId: "EXISTING",
+            subscriptions: [SubscriptionConfig(name: "Dev", id: "sub-1")],
+            pim: PIMConfig(justification: "Testing", duration: "PT4H"),
+            subscriptionFilter: "Dev"
+        )
+        let original = AppConfig(tenants: [existingTenant], loginBrowser: .chrome)
+        let runner = makeTestRunner(shell: shell, config: original, storageDirectory: directory)
+        let configPath = directory.appendingPathComponent("config.yaml").path
+        try ConfigLoader.saveConfig(original, to: configPath)
+        let originalBytes = try Data(contentsOf: URL(fileURLWithPath: configPath))
+
+        runner.send(.discoverTenants)
+        #expect(runner.isBusy)
+        runner.send(.discoverTenants)
+        runner.send(.addDiscoveredTenants(selectedIds))
+        runner.send(.loadConfig)
+        await waitForIdle(runner)
+        try #require(!runner.isBusy)
+
+        #expect(runner.config == original)
+        #expect(try Data(contentsOf: URL(fileURLWithPath: configPath)) == originalBytes)
+        #expect(runner.discoveredTenants?.count == 3)
+        #expect(shell.allCalls.count == 1)
+        #expect(runner.actionHistory.last?.commandLog.count == 1)
+        #expect(runner.actionHistory.last?.phase == .succeeded)
+
+        let latest = AppConfig(tenants: [existingTenant], loginBrowser: .firefox)
+        try ConfigLoader.saveConfig(latest, to: configPath)
+        runner.send(.addDiscoveredTenants(selectedIds))
+        await waitForIdle(runner)
+        try #require(!runner.isBusy)
+
+        let saved = try ConfigLoader.loadConfig(from: configPath).get()
+        #expect(saved == runner.config)
+        #expect(saved.loginBrowser == .firefox)
+        #expect(saved.tenants.first == existingTenant)
+        #expect(Set(saved.tenants.dropFirst().map(\.tenantId)) == selectedIds)
+        #expect(saved.tenants.dropFirst().allSatisfy { $0.subscriptions.isEmpty && $0.pim == nil })
+        #expect(runner.discoveredTenants == nil)
+        #expect(runner.tenantDiscoveryError == nil)
+        #expect(shell.allCalls.count == 1)
+
+        runner.send(.discoverTenants)
+        await waitForIdle(runner)
+        runner.send(.addDiscoveredTenants(selectedIds.union(["existing"])))
+        await waitForIdle(runner)
+        try #require(!runner.isBusy)
+        #expect(runner.config == saved)
+        #expect(try ConfigLoader.loadConfig(from: configPath).get() == saved)
+    }
+
+    @Test("discovery errors are visible without changing config",
+          arguments: [
+            ShellResult(stdout: "", stderr: "Please run 'az login'", exitCode: 1),
+            ShellResult(stdout: "invalid JSON", stderr: "", exitCode: 0),
+            ShellResult(stdout: "{}", stderr: "", exitCode: 0),
+          ])
+    @MainActor
+    func discoveryFailure(result: ShellResult) async throws {
+        let original = AppConfig(tenants: [])
+        let shell = SequentialMockShellExecutor(results: [result])
+        let runner = makeTestRunner(shell: shell, config: original)
+
+        runner.send(.discoverTenants)
+        await waitForIdle(runner)
+        try #require(!runner.isBusy)
+
+        #expect(runner.config == original)
+        #expect(runner.discoveredTenants == nil)
+        #expect(runner.tenantDiscoveryError?.contains("Tenant discovery failed") == true)
+        guard case .failed = runner.actionHistory.last?.phase else {
+            Issue.record("Discovery failure must be recorded as a failed action")
+            return
+        }
+        #expect(runner.actionHistory.last?.commandLog.count == 1)
+        #expect(shell.allCalls.count == 1)
+    }
+
+    @Test("missing config is created only after confirming a selection")
+    @MainActor
+    func missingConfigAndDismissal() async throws {
+        let directory = testStorageDirectory.appendingPathComponent(UUID().uuidString)
+        let shell = SequentialMockShellExecutor(results: [
+            ShellResult(stdout: tenantJSON, stderr: "", exitCode: 0),
+            ShellResult(stdout: tenantJSON, stderr: "", exitCode: 0),
+        ])
+        let runner = makeTestRunner(shell: shell, storageDirectory: directory)
+        let configPath = directory.appendingPathComponent("config.yaml").path
+
+        runner.send(.discoverTenants)
+        await waitForIdle(runner)
+        try #require(!runner.isBusy)
+        #expect(!FileManager.default.fileExists(atPath: configPath))
+        runner.send(.dismissTenantDiscovery)
+        #expect(runner.discoveredTenants == nil)
+        #expect(runner.config == nil)
+
+        runner.send(.discoverTenants)
+        await waitForIdle(runner)
+        runner.send(.addDiscoveredTenants(["new-b"]))
+        await waitForIdle(runner)
+        try #require(!runner.isBusy)
+        #expect(try ConfigLoader.loadConfig(from: configPath).get() == AppConfig(tenants: [
+            TenantConfig(name: "new-b.example.com", tenantId: "new-b", subscriptions: [])
+        ]))
+    }
+
+    @Test("failed imports keep discovery open and do not publish unsaved config",
+          arguments: ["invalid-yaml", "directory-target", "write-failure", "empty-selection", "unknown-selection"])
+    @MainActor
+    func failedImport(scenario: String) async throws {
+        let directory = testStorageDirectory.appendingPathComponent(UUID().uuidString)
+        let shell = SequentialMockShellExecutor(results: [
+            ShellResult(stdout: tenantJSON, stderr: "", exitCode: 0)
+        ])
+        let original = AppConfig(tenants: [])
+        let runner = makeTestRunner(shell: shell, config: original, storageDirectory: directory)
+        let configURL = directory.appendingPathComponent("config.yaml")
+        if scenario == "invalid-yaml" {
+            try "tenants: [".write(to: configURL, atomically: true, encoding: .utf8)
+        } else if scenario == "directory-target" {
+            try FileManager.default.createDirectory(at: configURL, withIntermediateDirectories: true)
+        }
+
+        runner.send(.discoverTenants)
+        await waitForIdle(runner)
+        if scenario == "write-failure" {
+            try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: directory.path)
+        }
+        defer {
+            if scenario == "write-failure" {
+                try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+            }
+        }
+        runner.send(.addDiscoveredTenants(
+            scenario == "empty-selection" ? [] : scenario == "unknown-selection" ? ["unknown"] : ["new-a"]
+        ))
+        await waitForIdle(runner)
+        try #require(!runner.isBusy)
+
+        #expect(runner.config == original)
+        #expect(runner.discoveredTenants?.count == 3)
+        #expect(runner.tenantDiscoveryError?.contains("Could not add tenants") == true)
+        guard case .failed = runner.actionHistory.last?.phase else {
+            Issue.record("Import failure must be recorded as a failed action")
+            return
+        }
+        if scenario == "invalid-yaml" {
+            #expect(try String(contentsOf: configURL, encoding: .utf8) == "tenants: [")
+        } else if scenario == "write-failure" {
+            #expect(runner.tenantDiscoveryError?.contains("Failed to save configuration") == true)
+            #expect(!FileManager.default.fileExists(atPath: configURL.path))
+        } else if scenario != "directory-target" {
+            #expect(!FileManager.default.fileExists(atPath: configURL.path))
+        }
+    }
+
+    @Test("an empty discovery succeeds without adding tenants")
+    @MainActor
+    func emptyDiscovery() async throws {
+        let shell = SequentialMockShellExecutor(results: [
+            ShellResult(stdout: #"{"value":[]}"#, stderr: "", exitCode: 0)
+        ])
+        let runner = makeTestRunner(shell: shell)
+        runner.send(.discoverTenants)
+        await waitForIdle(runner)
+        try #require(!runner.isBusy)
+        #expect(runner.discoveredTenants == [])
+        #expect(runner.tenantDiscoveryError == nil)
+        #expect(runner.config == nil)
+    }
+
+    @Test("cancelled discovery cannot publish or log late results into a newer action")
+    @MainActor
+    func cancelledDiscovery() async throws {
+        let shell = SuspendedDiscoveryShell()
+        let runner = makeTestRunner(shell: shell)
+        runner.send(.discoverTenants)
+        try await shell.waitForCall(1)
+        runner.send(.cancelAction)
+        #expect(!runner.isBusy)
+
+        runner.send(.discoverTenants)
+        try await shell.waitForCall(2)
+        let secondActionId = runner.currentAction?.id
+        try await shell.resolve(call: 1)
+        await Task.yield()
+        #expect(runner.currentAction?.id == secondActionId)
+        #expect(runner.discoveredTenants == nil)
+
+        try await shell.resolve(call: 2)
+        await waitForIdle(runner)
+        try #require(!runner.isBusy)
+        #expect(runner.discoveredTenants?.map(\.tenantId) == ["tenant-2"])
+        #expect(runner.tenantDiscoveryError == nil)
+        #expect(runner.actionHistory.count == 2)
+        #expect(runner.actionHistory.first?.phase == .failed("Cancelled"))
+        #expect(runner.actionHistory.last?.phase == .succeeded)
+        #expect(runner.actionHistory.last?.commandLog.count == 1)
+    }
+
+    @Test("tenant picker renders in the native panel size",
+          arguments: [0, 2, 100])
+    @MainActor
+    func nativePickerRendering(count: Int) throws {
+        _ = NSApplication.shared
+        let shell = MockShellExecutor()
+        let runner = makeTestRunner(shell: shell, config: AppConfig(tenants: [
+            TenantConfig(name: "Existing", tenantId: "tenant-0", subscriptions: [])
+        ]))
+        let tenants = (0..<count).map {
+            AzTenant(tenantId: "tenant-\($0)", displayName: "Tenant \($0)", defaultDomain: nil)
+        }
+        let hostingView = NSHostingView(rootView: TenantDiscoveryView(tenants: tenants, runner: runner))
+        hostingView.frame = NSRect(x: 0, y: 0, width: 500, height: 400)
+        hostingView.layoutSubtreeIfNeeded()
+        let bitmap = try #require(hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds))
+        hostingView.cacheDisplay(in: hostingView.bounds, to: bitmap)
+        #expect(bitmap.pixelsWide >= 500)
+        #expect(bitmap.pixelsHigh >= 400)
+        #expect(hostingView.fittingSize.width.isFinite)
+        #expect(hostingView.fittingSize.height.isFinite)
+    }
+}
+
+@Suite("ActionRunner - PIM Loading")
+struct PIMLoadingTests {
+    private actor Shell: ShellExecuting {
+        private(set) var calls: [[String]] = []
+        private var discoveryFails = false
+        private let context: String
+        private let suspendDiscovery: Bool
+        private var pendingDiscovery: CheckedContinuation<Void, Never>?
+
+        init(context: String = accountShowJSON(tenantId: "tenant-A"), suspendDiscovery: Bool = false) {
+            self.context = context
+            self.suspendDiscovery = suspendDiscovery
+        }
+
+        func setDiscoveryFailure(_ fails: Bool) {
+            discoveryFails = fails
+        }
+
+        func waitForDiscovery() async throws {
+            let deadline = Date().addingTimeInterval(5)
+            while pendingDiscovery == nil && Date() < deadline {
+                try await Task.sleep(nanoseconds: 10_000_000)
+            }
+            try #require(pendingDiscovery != nil)
+        }
+
+        func resumeDiscovery() {
+            pendingDiscovery?.resume()
+            pendingDiscovery = nil
+        }
+
+        func run(executable: String, arguments: [String]) async throws -> ShellResult {
+            calls.append(arguments)
+            let output: String
+            switch arguments {
+            case ["login", "--tenant", "tenant-A"], ["account", "set", "-s", "sub-1"]:
+                output = ""
+            case ["account", "list", "-o", "json"]:
+                output = accountListJSON(tenantId: "tenant-A")
+            case ["ad", "signed-in-user", "show", "-o", "json"]:
+                output = signedInUserJSON()
+            case ["account", "show", "-o", "json"]:
+                output = context
+            case ["rest", "--method", "GET", "--url",
+                  "https://management.azure.com/subscriptions/sub-1/providers/Microsoft.Authorization/roleEligibilityScheduleInstances?api-version=2020-10-01&$filter=asTarget()",
+                  "-o", "json"]:
+                if suspendDiscovery {
+                    await withCheckedContinuation { pendingDiscovery = $0 }
+                }
+                if discoveryFails {
+                    return ShellResult(stdout: "", stderr: "AuthorizationFailed", exitCode: 1)
+                }
+                output = """
+                {"value":[{"id":"eligible-role","properties":{
+                  "roleDefinitionId":"/subscriptions/sub-1/providers/Microsoft.Authorization/roleDefinitions/owner",
+                  "scope":"/subscriptions/sub-1","principalId":"user-id","roleEligibilityScheduleId":"schedule-id"
+                }}]}
+                """
+            case ["role", "definition", "list", "--scope", "/subscriptions/sub-1", "-o", "json"]:
+                output = """
+                [{"id":"/subscriptions/sub-1/providers/Microsoft.Authorization/roleDefinitions/owner","roleName":"Owner"}]
+                """
+            default:
+                guard arguments.starts(with: ["rest", "--method", "PUT"]),
+                      arguments.contains("--body") else {
+                    throw AzCLIError.commandFailed(stderr: "Unexpected test command: \(arguments)", exitCode: 1)
+                }
+                output = #"{"properties":{"status":"Granted","scheduleInfo":{"expiration":{"endDateTime":"2030-01-01T00:00:00Z"}}}}"#
+            }
+            return ShellResult(stdout: output, stderr: "", exitCode: 0)
+        }
+    }
+
+    @Test("login and subscription selection load eligible PIM roles with or without PIM settings",
+          arguments: [false, true], ["login", "login-and-select", "select-subscription"])
+    @MainActor
+    func loadsRoles(configured: Bool, path: String) async throws {
+        let shell = Shell()
+        let subscription = SubscriptionConfig(name: "Dev", id: "sub-1")
+        let tenant = TenantConfig(
+            name: "Tenant A", tenantId: "tenant-A", subscriptions: [subscription],
+            pim: configured ? PIMConfig(justification: "Development", duration: "PT4H") : nil
+        )
+        let runner = makeTestRunner(shell: shell, config: AppConfig(tenants: [tenant]))
+        switch path {
+        case "login":
+            runner.send(.login(tenant))
+        case "login-and-select":
+            runner.send(.loginAndSelect(subscription, tenant: tenant))
+        default:
+            runner.send(.selectSubscription(subscription, tenantId: tenant.tenantId))
+        }
+        await waitForIdle(runner)
+        try #require(!runner.isBusy)
+
+        #expect(runner.cache(for: tenant.tenantId).eligiblePIMRoles.map(\.id) == ["eligible-role"])
+        #expect(runner.cache(for: tenant.tenantId).eligiblePIMRoles.first?.roleName == "Owner")
+        #expect(runner.pimRoles(for: tenant.tenantId).map(\.id) == ["eligible-role"])
+        #expect(runner.pimRoles(for: "tenant-B").isEmpty)
+        #expect(runner.isActiveTenant(tenant.tenantId))
+        let calls = await shell.calls
+        #expect(calls.filter { $0.first == "rest" }.count == 1)
+    }
+
+    @Test("new tenants load PIM roles even before exposing subscriptions", arguments: [false, true])
+    @MainActor
+    func loadsRolesWithoutConfiguredSubscriptions(configured: Bool) async throws {
+        let shell = Shell()
+        let tenant = TenantConfig(
+            name: "Discovered", tenantId: "tenant-A", subscriptions: [],
+            pim: configured ? PIMConfig(justification: "Development", duration: "PT4H") : nil
+        )
+        let runner = makeTestRunner(shell: shell, config: AppConfig(tenants: [tenant]))
+        runner.send(.login(tenant))
+        await waitForIdle(runner)
+        try #require(!runner.isBusy)
+        #expect(runner.cache(for: tenant.tenantId).eligiblePIMRoles.map(\.id) == ["eligible-role"])
+        #expect(runner.config?.tenants.first?.subscriptions.isEmpty == true)
+    }
+
+    @Test("failed discovery is visible and a later selection clears the error")
+    @MainActor
+    func discoveryErrorAndRecovery() async throws {
+        let shell = Shell()
+        let subscription = SubscriptionConfig(name: "Dev", id: "sub-1")
+        let runner = makeTestRunner(shell: shell)
+        await shell.setDiscoveryFailure(true)
+        runner.send(.selectSubscription(subscription, tenantId: "tenant-A"))
+        await waitForIdle(runner)
+        try #require(!runner.isBusy)
+        #expect(runner.cache(for: "tenant-A").pimDiscoveryError?.contains("AuthorizationFailed") == true)
+        #expect(runner.cache(for: "tenant-A").eligiblePIMRoles.isEmpty)
+        guard case .partialSuccess = runner.actionHistory.last?.phase else {
+            Issue.record("Discovery failure must not be reported as a successful empty list")
+            return
+        }
+        #expect(runner.actionHistory.last?.commandLog.last?.exitCode == 1)
+
+        await shell.setDiscoveryFailure(false)
+        runner.send(.selectSubscription(subscription, tenantId: "tenant-A"))
+        await waitForIdle(runner)
+        try #require(!runner.isBusy)
+        #expect(runner.cache(for: "tenant-A").pimDiscoveryError == nil)
+        #expect(runner.cache(for: "tenant-A").eligiblePIMRoles.map(\.id) == ["eligible-role"])
+        #expect(runner.actionHistory.last?.phase == .succeeded)
+    }
+
+    @Test("refreshing roles preserves activation status and configured activation request")
+    @MainActor
+    func preservesActivation() async throws {
+        let shell = Shell()
+        let subscription = SubscriptionConfig(name: "Dev", id: "sub-1")
+        let tenant = TenantConfig(
+            name: "Tenant A", tenantId: "tenant-A", subscriptions: [subscription],
+            pim: PIMConfig(justification: "Configured justification", duration: "PT4H")
+        )
+        let runner = makeTestRunner(shell: shell, config: AppConfig(tenants: [tenant]))
+        runner.send(.login(tenant))
+        await waitForIdle(runner)
+        try #require(!runner.isBusy)
+        let role = try #require(runner.cache(for: tenant.tenantId).eligiblePIMRoles.first)
+        runner.send(.activatePIM(role, tenant))
+        await waitForIdle(runner)
+        try #require(!runner.isBusy)
+        let activeStatus = try #require(runner.cache(for: tenant.tenantId).pimRoleStatuses[role.id])
+        #expect(activeStatus.status == .active(expires: "2030-01-01T00:00:00Z"))
+
+        runner.send(.loginAndSelect(subscription, tenant: tenant))
+        await waitForIdle(runner)
+        try #require(!runner.isBusy)
+        #expect(runner.cache(for: tenant.tenantId).pimRoleStatuses[role.id] == activeStatus)
+        let calls = await shell.calls
+        let activation = try #require(calls.first { $0.starts(with: ["rest", "--method", "PUT"]) })
+        let bodyIndex = try #require(activation.firstIndex(of: "--body"))
+        let body = try JSONSerialization.jsonObject(with: Data(activation[bodyIndex + 1].utf8)) as? [String: Any]
+        let properties = try #require(body?["properties"] as? [String: Any])
+        #expect(properties["justification"] as? String == "Configured justification")
+        let schedule = try #require(properties["scheduleInfo"] as? [String: Any])
+        let expiration = try #require(schedule["expiration"] as? [String: Any])
+        #expect(expiration["duration"] as? String == "PT4H")
+        #expect(calls.filter { $0.contains("login") }.count == 1)
+    }
+
+    @Test("PIM is not queried for a mismatched live tenant")
+    @MainActor
+    func mismatchedTenant() async throws {
+        let shell = Shell(context: accountShowJSON(tenantId: "tenant-B"))
+        let runner = makeTestRunner(shell: shell)
+        runner.send(.selectSubscription(SubscriptionConfig(name: "Dev", id: "sub-1"), tenantId: "tenant-A"))
+        await waitForIdle(runner)
+        try #require(!runner.isBusy)
+        #expect(runner.cache(for: "tenant-A").eligiblePIMRoles.isEmpty)
+        #expect(runner.cache(for: "tenant-A").pimDiscoveryError?.contains("not active") == true)
+        let calls = await shell.calls
+        #expect(!calls.contains { $0.first == "rest" })
+    }
+
+    @Test("login without a selected subscription does not query PIM")
+    @MainActor
+    func noSelectedSubscription() async throws {
+        let shell = Shell(context: #"{"tenantId":"tenant-A","user":{"name":"user@example.com"}}"#)
+        let tenant = TenantConfig(name: "Empty", tenantId: "tenant-A", subscriptions: [])
+        let runner = makeTestRunner(shell: shell, config: AppConfig(tenants: [tenant]))
+        runner.send(.login(tenant))
+        await waitForIdle(runner)
+        try #require(!runner.isBusy)
+        #expect(runner.pimRoles(for: tenant.tenantId).isEmpty)
+        #expect(runner.cache(for: tenant.tenantId).pimDiscoveryError == nil)
+        #expect(runner.actionHistory.last?.phase == .succeeded)
+        let calls = await shell.calls
+        #expect(!calls.contains { $0.first == "rest" })
+    }
+
+    @Test("cancelled PIM discovery cannot publish late roles")
+    @MainActor
+    func cancelledPIMDiscovery() async throws {
+        let shell = Shell(suspendDiscovery: true)
+        let runner = makeTestRunner(shell: shell)
+        runner.send(.selectSubscription(SubscriptionConfig(name: "Dev", id: "sub-1"), tenantId: "tenant-A"))
+        try await shell.waitForDiscovery()
+        runner.send(.cancelAction)
+        #expect(!runner.isBusy)
+        await shell.resumeDiscovery()
+        await Task.yield()
+        #expect(runner.cache(for: "tenant-A").eligiblePIMRoles.isEmpty)
+        #expect(runner.cache(for: "tenant-A").pimDiscoveryError == nil)
+        #expect(runner.actionHistory.last?.phase == .failed("Cancelled"))
     }
 }
 
@@ -130,6 +646,7 @@ struct TenantStatusDerivationTests {
             ShellResult(stdout: signedInUserJSON(), stderr: "", exitCode: 0),
             // 5. az account show -o json (refreshAzureContext at end of startAction)
             ShellResult(stdout: accountShowJSON(tenantId: "tenant-A"), stderr: "", exitCode: 0),
+            ShellResult(stdout: #"{"value":[]}"#, stderr: "", exitCode: 0),
         ])
         let runner2 = makeTestRunner(shell: seqShell)
         let tenant = TenantConfig(name: "Tenant A", tenantId: "tenant-A", subscriptions: [
@@ -151,6 +668,7 @@ struct TenantStatusDerivationTests {
             ShellResult(stdout: "", stderr: "", exitCode: 0), // set sub
             ShellResult(stdout: signedInUserJSON(), stderr: "", exitCode: 0), // user
             ShellResult(stdout: accountShowJSON(tenantId: "tenant-A"), stderr: "", exitCode: 0), // refresh
+            ShellResult(stdout: #"{"value":[]}"#, stderr: "", exitCode: 0),
         ])
         let runner = makeTestRunner(shell: seqShell)
         let tenant = TenantConfig(name: "Tenant A", tenantId: "tenant-A", subscriptions: [
@@ -182,6 +700,7 @@ struct TenantStatusDerivationTests {
             ShellResult(stdout: "", stderr: "", exitCode: 0), // set sub
             ShellResult(stdout: signedInUserJSON(), stderr: "", exitCode: 0),
             ShellResult(stdout: accountShowJSON(tenantId: "tenant-A"), stderr: "", exitCode: 0),
+            ShellResult(stdout: #"{"value":[]}"#, stderr: "", exitCode: 0),
         ])
         let runner = makeTestRunner(shell: seqShell)
         let tenant = TenantConfig(name: "Tenant A", tenantId: "tenant-A", subscriptions: [
@@ -206,12 +725,14 @@ struct TenantStatusDerivationTests {
             ShellResult(stdout: "", stderr: "", exitCode: 0), // set sub
             ShellResult(stdout: signedInUserJSON(), stderr: "", exitCode: 0),
             ShellResult(stdout: accountShowJSON(tenantId: "tenant-A"), stderr: "", exitCode: 0),
+            ShellResult(stdout: #"{"value":[]}"#, stderr: "", exitCode: 0),
             // Login to tenant-B
             ShellResult(stdout: "", stderr: "", exitCode: 0), // login
             ShellResult(stdout: accountListJSON(tenantId: "tenant-B", subs: [("sub-B", "Prod")]), stderr: "", exitCode: 0),
             ShellResult(stdout: "", stderr: "", exitCode: 0), // set sub
             ShellResult(stdout: signedInUserJSON(id: "user-b", upn: "userb@example.com"), stderr: "", exitCode: 0),
             ShellResult(stdout: accountShowJSON(tenantId: "tenant-B", subscriptionId: "sub-B"), stderr: "", exitCode: 0),
+            ShellResult(stdout: #"{"value":[]}"#, stderr: "", exitCode: 0),
         ])
         let runner = makeTestRunner(shell: seqShell)
 
@@ -300,6 +821,7 @@ struct LoginAndSelectTests {
             ShellResult(stdout: signedInUserJSON(), stderr: "", exitCode: 0),
             // 5. az account show -o json (refreshAzureContext)
             ShellResult(stdout: accountShowJSON(tenantId: "tenant-A", subscriptionId: "sub-2", subscriptionName: "Prod"), stderr: "", exitCode: 0),
+            ShellResult(stdout: #"{"value":[]}"#, stderr: "", exitCode: 0),
         ])
         let runner = makeTestRunner(shell: seqShell)
         let tenant = TenantConfig(name: "Tenant A", tenantId: "tenant-A", subscriptions: [
@@ -339,6 +861,7 @@ struct LoginAndSelectTests {
             ShellResult(stdout: "", stderr: "", exitCode: 0), // set sub
             ShellResult(stdout: signedInUserJSON(), stderr: "", exitCode: 0),
             ShellResult(stdout: accountShowJSON(tenantId: "tenant-X", subscriptionId: "sub-X", subscriptionName: "MySub"), stderr: "", exitCode: 0),
+            ShellResult(stdout: #"{"value":[]}"#, stderr: "", exitCode: 0),
         ])
         let runner = makeTestRunner(shell: seqShell)
         let tenant = TenantConfig(name: "Tenant X", tenantId: "tenant-X", subscriptions: [
@@ -365,9 +888,11 @@ struct LoginAndSelectTests {
             ShellResult(stdout: "", stderr: "", exitCode: 0), // set sub-1
             ShellResult(stdout: signedInUserJSON(), stderr: "", exitCode: 0),
             ShellResult(stdout: accountShowJSON(tenantId: "tenant-A", subscriptionId: "sub-1"), stderr: "", exitCode: 0),
+            ShellResult(stdout: #"{"value":[]}"#, stderr: "", exitCode: 0),
             // loginAndSelect on same tenant — should skip login, just set sub-2
             ShellResult(stdout: "", stderr: "", exitCode: 0), // set sub-2 (no login call)
             ShellResult(stdout: accountShowJSON(tenantId: "tenant-A", subscriptionId: "sub-2", subscriptionName: "Prod"), stderr: "", exitCode: 0),
+            ShellResult(stdout: #"{"value":[]}"#, stderr: "", exitCode: 0),
         ])
         let runner = makeTestRunner(shell: seqShell)
         let tenant = TenantConfig(name: "Tenant A", tenantId: "tenant-A", subscriptions: [
@@ -410,6 +935,7 @@ struct LoginAndSelectTests {
             ShellResult(stdout: "", stderr: "", exitCode: 0),
             ShellResult(stdout: signedInUserJSON(), stderr: "", exitCode: 0),
             ShellResult(stdout: accountShowJSON(tenantId: "tenant-A"), stderr: "", exitCode: 0),
+            ShellResult(stdout: #"{"value":[]}"#, stderr: "", exitCode: 0),
         ])
         let tenant = TenantConfig(
             name: "Tenant A",
@@ -470,12 +996,14 @@ struct StateConsistencyTests {
             ShellResult(stdout: "", stderr: "", exitCode: 0),
             ShellResult(stdout: signedInUserJSON(), stderr: "", exitCode: 0),
             ShellResult(stdout: accountShowJSON(tenantId: "tenant-A"), stderr: "", exitCode: 0),
+            ShellResult(stdout: #"{"value":[]}"#, stderr: "", exitCode: 0),
             // Login tenant-B
             ShellResult(stdout: "", stderr: "", exitCode: 0),
             ShellResult(stdout: accountListJSON(tenantId: "tenant-B", subs: [("sub-B", "Prod")]), stderr: "", exitCode: 0),
             ShellResult(stdout: "", stderr: "", exitCode: 0),
             ShellResult(stdout: signedInUserJSON(id: "user-b", upn: "b@example.com"), stderr: "", exitCode: 0),
             ShellResult(stdout: accountShowJSON(tenantId: "tenant-B", subscriptionId: "sub-B"), stderr: "", exitCode: 0),
+            ShellResult(stdout: #"{"value":[]}"#, stderr: "", exitCode: 0),
         ])
         let runner = makeTestRunner(shell: seqShell)
 
@@ -507,6 +1035,7 @@ struct StateConsistencyTests {
             ShellResult(stdout: "", stderr: "", exitCode: 0),
             ShellResult(stdout: signedInUserJSON(), stderr: "", exitCode: 0),
             ShellResult(stdout: accountShowJSON(tenantId: "tenant-A"), stderr: "", exitCode: 0),
+            ShellResult(stdout: #"{"value":[]}"#, stderr: "", exitCode: 0),
             // logoutAll: az account clear
             ShellResult(stdout: "", stderr: "", exitCode: 0),
             // refreshAzureContext after logoutAll — returns empty/error
@@ -539,12 +1068,14 @@ struct StateConsistencyTests {
             ShellResult(stdout: "", stderr: "", exitCode: 0),
             ShellResult(stdout: signedInUserJSON(id: "user-a", upn: "a@example.com"), stderr: "", exitCode: 0),
             ShellResult(stdout: accountShowJSON(tenantId: "tenant-A"), stderr: "", exitCode: 0),
+            ShellResult(stdout: #"{"value":[]}"#, stderr: "", exitCode: 0),
             // Login tenant-B (makes tenant-A inactive)
             ShellResult(stdout: "", stderr: "", exitCode: 0),
             ShellResult(stdout: accountListJSON(tenantId: "tenant-B", subs: [("sub-B", "Prod")]), stderr: "", exitCode: 0),
             ShellResult(stdout: "", stderr: "", exitCode: 0),
             ShellResult(stdout: signedInUserJSON(id: "user-b", upn: "b@example.com"), stderr: "", exitCode: 0),
             ShellResult(stdout: accountShowJSON(tenantId: "tenant-B", subscriptionId: "sub-B"), stderr: "", exitCode: 0),
+            ShellResult(stdout: #"{"value":[]}"#, stderr: "", exitCode: 0),
         ])
         let runner = makeTestRunner(shell: seqShell)
 

@@ -5,20 +5,34 @@ struct PIMSection: View {
     let cache: TenantCache
     let runner: ActionRunner
 
+    private var roles: [PIMEligibleRole] { runner.pimRoles(for: tenant.tenantId) }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("PIM Roles (\(cache.eligiblePIMRoles.count))")
+            Text("PIM Roles (\(roles.count))")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            if cache.eligiblePIMRoles.isEmpty {
+            if let error = cache.pimDiscoveryError {
+                Text(error)
+                    .foregroundStyle(.red)
+                    .font(.caption)
+            } else if runner.azureContext.currentSubscriptionId == nil {
+                Text("Select a subscription to load PIM roles")
+                    .foregroundStyle(.secondary)
+                    .font(.caption)
+            } else if roles.isEmpty {
                 Text("No eligible PIM roles")
                     .foregroundStyle(.secondary)
                     .font(.caption)
-            } else {
-                ForEach(cache.eligiblePIMRoles, id: \.id) { role in
-                    roleRow(role)
-                }
+            }
+            if tenant.pim == nil && !roles.isEmpty {
+                Text("Configure pim.justification and pim.duration in ~/.az-login-switcher.yaml to activate roles")
+                    .foregroundStyle(.secondary)
+                    .font(.caption)
+            }
+            ForEach(roles, id: \.id) { role in
+                roleRow(role)
             }
         }
     }
@@ -53,7 +67,7 @@ struct PIMSection: View {
             }
             .buttonStyle(.borderless)
             .font(.caption)
-            .disabled(runner.isBusy)
+            .disabled(runner.isBusy || tenant.pim == nil)
 
         case .activating:
             ProgressView()
@@ -87,7 +101,7 @@ struct PIMSection: View {
                 }
                 .buttonStyle(.borderless)
                 .font(.caption)
-                .disabled(runner.isBusy)
+                .disabled(runner.isBusy || tenant.pim == nil)
             }
         }
     }

@@ -8,7 +8,29 @@ struct MainView: View {
             if runner.isBusy, let action = runner.currentAction {
                 actionProgressBar(action)
             }
-            if let error = runner.configError {
+            HStack {
+                Button { runner.send(.discoverTenants) } label: {
+                    Label("Discover tenants", systemImage: "magnifyingglass")
+                }
+                .buttonStyle(.borderless)
+                .disabled(runner.isBusy)
+                .help("Find tenants accessible to your signed-in Azure CLI account. Log in first if needed.")
+                Spacer()
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 8)
+
+            if let error = runner.tenantDiscoveryError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal)
+                    .padding(.bottom, 8)
+            }
+            if let tenants = runner.discoveredTenants {
+                TenantDiscoveryView(tenants: tenants, runner: runner)
+            } else if let error = runner.configError {
                 configErrorView(error)
             } else if runner.config == nil {
                 noConfigView
@@ -73,7 +95,7 @@ struct MainView: View {
             Image(systemName: "doc.badge.gearshape")
                 .font(.largeTitle)
                 .foregroundStyle(.secondary)
-            Text("Create config at")
+            Text("Discover tenants to create your configuration, or edit")
                 .foregroundStyle(.secondary)
             Text("~/.az-login-switcher.yaml")
                 .font(.system(.caption, design: .monospaced))
@@ -100,7 +122,9 @@ struct MainView: View {
         HStack {
             Button { runner.send(.loadConfig) } label: {
                 Label("Reload", systemImage: "arrow.clockwise")
-            }.buttonStyle(.borderless)
+            }
+            .buttonStyle(.borderless)
+            .disabled(runner.isBusy)
 
             Button { runner.send(.openLogFolder) } label: {
                 Label("Logs", systemImage: "doc.text")

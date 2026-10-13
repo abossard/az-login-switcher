@@ -28,7 +28,11 @@ open build/AzLoginSwitcher.app
 
 ## Configuration
 
-Copy `example-config.yaml` to `~/.az-login-switcher.yaml` and edit with your tenant and subscription details.
+Sign in to Azure CLI, open the app, and click **Discover tenants**. Select the tenants you want and click **Add selected**. The app saves them to `~/.az-login-switcher.yaml`, preserving existing tenant settings. Discovery queries Azure for tenants accessible to your current CLI account, including tenants without subscriptions.
+
+Click **Login** on an added tenant, then use its gear icon to select subscriptions. Login and subscription switching load eligible PIM roles for the active subscription, including tenants without PIM settings. To activate roles, configure `pim.justification` and `pim.duration` in the configuration file. Discovery errors appear in the PIM section.
+
+Alternatively, copy `example-config.yaml` to `~/.az-login-switcher.yaml` and edit your tenant and subscription details.
 
 **Configuration fields:**
 - `loginBrowser` (optional) — Browser used for interactive Azure CLI login: `safari`, `chrome`, `edge`, or `firefox`. When omitted, installed Edge is preferred. If the selected browser is unavailable, or Edge is unavailable when omitted, Azure CLI uses the system default browser.

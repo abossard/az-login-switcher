@@ -252,9 +252,7 @@ struct TenantRow: View {
 
     private var expandedContent: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if currentTenant.pim != nil {
-                PIMSection(tenant: currentTenant, cache: cache, runner: runner)
-            }
+            PIMSection(tenant: currentTenant, cache: cache, runner: runner)
         }
         .padding(.leading, 16)
     }

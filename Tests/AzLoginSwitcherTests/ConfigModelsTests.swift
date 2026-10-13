@@ -278,6 +278,21 @@ final class ConfigModelsTests: XCTestCase {
     }
     
     // MARK: - ConfigLoader Integration Tests
+
+    func testAddTenantsReportsSaveFailure() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tenant-import-\(UUID().uuidString)")
+        let path = directory.appendingPathComponent("missing-parent/config.yaml").path
+        let tenant = TenantConfig(name: "New", tenantId: "new-id", subscriptions: [])
+
+        XCTAssertThrowsError(try ConfigLoader.addTenants([tenant], to: path)) { error in
+            guard case ConfigError.saveError = error else {
+                XCTFail("Expected saveError, got \(error)")
+                return
+            }
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: path))
+    }
     
     func testConfigLoaderDefaultPath() {
         let path = ConfigLoader.defaultConfigPath()

@@ -3,6 +3,8 @@ import Foundation
 // MARK: - Action Kind
 
 enum AzActionKind: Equatable, Sendable {
+    case discoverTenants
+    case addTenants
     case login(tenantId: String, tenantName: String)
     case logout(tenantId: String, tenantName: String)
     case selectSubscription(subscriptionId: String, subscriptionName: String, tenantId: String)
@@ -11,6 +13,8 @@ enum AzActionKind: Equatable, Sendable {
 
     var displayName: String {
         switch self {
+        case .discoverTenants: return "Discover tenants"
+        case .addTenants: return "Add tenants"
         case .login(_, let name): return "Login to \(name)"
         case .logout(_, let name): return "Logout from \(name)"
         case .selectSubscription(_, let name, _): return "Select \(name)"
@@ -21,6 +25,7 @@ enum AzActionKind: Equatable, Sendable {
 
     var tenantId: String {
         switch self {
+        case .discoverTenants, .addTenants: return "all"
         case .login(let id, _), .logout(let id, _): return id
         case .selectSubscription(_, _, let id): return id
         case .activatePIM(_, _, _, let id): return id

@@ -5,9 +5,9 @@ final class ActionLogger: Sendable {
     private let logDirectoryURL: URL
     private let maxAgeDays: Int
     
-    init(maxAgeDays: Int = 30) {
+    init(maxAgeDays: Int = 30, logDirectoryURL: URL? = nil) {
         let libraryURL = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first!
-        self.logDirectoryURL = libraryURL.appendingPathComponent("Logs/az-login-switcher")
+        self.logDirectoryURL = logDirectoryURL ?? libraryURL.appendingPathComponent("Logs/az-login-switcher")
         self.maxAgeDays = maxAgeDays
         ensureDirectoryExists()
         pruneOldLogs()

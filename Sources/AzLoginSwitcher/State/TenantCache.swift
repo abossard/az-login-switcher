@@ -20,6 +20,7 @@ struct TenantCache: Sendable, Codable {
     var activeSubscription: AzSubscription?
     var subscriptionSetAt: Date?
     var eligiblePIMRoles: [PIMEligibleRole] = []
+    var pimDiscoveryError: String?
     var pimRoleStatuses: [String: PIMRoleStatusEntry] = [:]
     var signedInUser: AzUser?
 }
@@ -46,13 +47,13 @@ struct PersistedState: Codable {
         return home.appendingPathComponent(".az-login-switcher-state.json").path
     }()
     
-    static func load() -> PersistedState? {
-        guard let data = FileManager.default.contents(atPath: filePath) else { return nil }
+    static func load(from path: String = filePath) -> PersistedState? {
+        guard let data = FileManager.default.contents(atPath: path) else { return nil }
         return try? JSONDecoder().decode(PersistedState.self, from: data)
     }
     
-    func save() {
+    func save(to path: String = Self.filePath) {
         guard let data = try? JSONEncoder().encode(self) else { return }
-        FileManager.default.createFile(atPath: Self.filePath, contents: data)
+        FileManager.default.createFile(atPath: path, contents: data)
     }
 }

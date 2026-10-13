@@ -5,6 +5,7 @@ public enum ConfigError: Error, Equatable {
     case fileNotFound(String)
     case parseError(String)
     case validationError(String)
+    case saveError(String)
 }
 
 extension ConfigError: LocalizedError {
@@ -16,6 +17,8 @@ extension ConfigError: LocalizedError {
             return "Failed to parse configuration: \(message)"
         case .validationError(let message):
             return "Configuration validation failed: \(message)"
+        case .saveError(let message):
+            return "Failed to save configuration: \(message)"
         }
     }
 }
@@ -43,15 +46,36 @@ public struct ConfigLoader {
         }
     }
     
-    public static func saveConfig(_ config: AppConfig, to path: String? = nil) {
+    public static func saveConfig(_ config: AppConfig, to path: String? = nil) throws {
         let expandedPath = ((path ?? defaultConfigPath()) as NSString).expandingTildeInPath
+        _ = try validate(config: config).get()
         do {
             let encoder = YAMLEncoder()
             let yamlString = try encoder.encode(config)
             try yamlString.write(toFile: expandedPath, atomically: true, encoding: .utf8)
         } catch {
-            // Best-effort save — don't crash
+            throw ConfigError.saveError(error.localizedDescription)
         }
+    }
+
+    public static func addTenants(_ tenants: [TenantConfig], to path: String? = nil) throws -> AppConfig {
+        let configPath = path ?? defaultConfigPath()
+        var config: AppConfig
+        switch loadConfig(from: configPath) {
+        case .success(let existing):
+            config = existing
+        case .failure(.fileNotFound):
+            config = AppConfig(tenants: [])
+        case .failure(let error):
+            throw error
+        }
+
+        var tenantIds = Set(config.tenants.map { $0.tenantId.lowercased() })
+        for tenant in tenants where tenantIds.insert(tenant.tenantId.lowercased()).inserted {
+            config.tenants.append(tenant)
+        }
+        try saveConfig(config, to: configPath)
+        return config
     }
     
     public static func defaultConfigPath() -> String {

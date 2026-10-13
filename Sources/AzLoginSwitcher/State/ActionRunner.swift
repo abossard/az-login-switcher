@@ -20,6 +20,9 @@ enum TenantStatus: Equatable {
 
 enum AppEvent: Sendable {
     case loadConfig
+    case discoverTenants
+    case addDiscoveredTenants(Set<String>)
+    case dismissTenantDiscovery
     case login(TenantConfig)
     case logout(tenantId: String)
     case logoutAll
@@ -46,6 +49,8 @@ final class ActionRunner {
     // MARK: - Projections (read-only to views)
     private(set) var config: AppConfig?
     private(set) var configError: String?
+    private(set) var discoveredTenants: [AzTenant]?
+    private(set) var tenantDiscoveryError: String?
     private(set) var tenantCaches: [String: TenantCache] = [:]
     private(set) var azureContext: AzureContext = .empty
     private(set) var actionHistory: [AzAction] = []
@@ -63,6 +68,8 @@ final class ActionRunner {
     private let azCLI: AzCLI
     private let pimService: PIMService
     private let logger: ActionLogger
+    private let configPath: String
+    private let statePath: String
     private var currentTask: Task<Void, Never>?
 
     init(
@@ -70,13 +77,17 @@ final class ActionRunner {
         pimService: PIMService,
         logger: ActionLogger,
         config: AppConfig? = nil,
-        availableBrowsers: [BrowserInfo] = []
+        availableBrowsers: [BrowserInfo] = [],
+        configPath: String = ConfigLoader.defaultConfigPath(),
+        statePath: String = PersistedState.filePath
     ) {
         self.azCLI = azCLI
         self.pimService = pimService
         self.logger = logger
         self.config = config
         self.availableBrowsers = availableBrowsers
+        self.configPath = configPath
+        self.statePath = statePath
     }
 
     // MARK: - Single Entry Point
@@ -85,6 +96,26 @@ final class ActionRunner {
         switch event {
         case .loadConfig:
             handleLoadConfig()
+
+        case .discoverTenants:
+            guard !isBusy else { return }
+            discoveredTenants = nil
+            tenantDiscoveryError = nil
+            startAction(.discoverTenants) { [self] action in
+                await executeDiscoverTenants(action: action)
+            }
+
+        case .addDiscoveredTenants(let tenantIds):
+            guard !isBusy else { return }
+            tenantDiscoveryError = nil
+            startAction(.addTenants) { [self] action in
+                await executeAddTenants(action: action, tenantIds: tenantIds)
+            }
+
+        case .dismissTenantDiscovery:
+            guard !isBusy else { return }
+            discoveredTenants = nil
+            tenantDiscoveryError = nil
 
         case .login(let tenant):
             guard !isBusy else { return }
@@ -177,10 +208,14 @@ final class ActionRunner {
     // MARK: - Config
 
     private func handleLoadConfig() {
-        let result = ConfigLoader.loadConfig(from: ConfigLoader.defaultConfigPath())
+        guard !isBusy else { return }
+        let result = ConfigLoader.loadConfig(from: configPath)
         switch result {
         case .success(let appConfig):
             config = appConfig
+            configError = nil
+        case .failure(.fileNotFound):
+            config = nil
             configError = nil
         case .failure(let error):
             configError = error.localizedDescription
@@ -201,7 +236,21 @@ final class ActionRunner {
 
         currentTask = Task {
             await execute(action)
-            await refreshAzureContext()
+            guard !Task.isCancelled, currentAction?.id == action.id else { return }
+            if kind != .discoverTenants && kind != .addTenants {
+                await refreshAzureContext(actionId: action.id)
+            }
+            guard !Task.isCancelled, currentAction?.id == action.id else { return }
+            switch kind {
+            case .login, .loginAndSelect, .selectSubscription:
+                if currentAction?.phase == .succeeded {
+                    await refreshPIMRoles(action: action)
+                }
+            default:
+                break
+            }
+            guard !Task.isCancelled, currentAction?.id == action.id else { return }
+            finishAction()
         }
     }
 
@@ -220,6 +269,12 @@ final class ActionRunner {
     private func completeAction(phase: AzActionPhase) {
         guard case .busy(var action) = fsmState else { return }
         action.complete(phase: phase)
+        fsmState = .busy(action)
+    }
+
+    private func finishAction() {
+        guard case .busy(var action) = fsmState, action.isTerminal else { return }
+        action.completedAt = Date()
         actionHistory.append(action)
         if actionHistory.count > 100 { actionHistory.removeFirst() }
         logger.logAction(action)
@@ -230,22 +285,72 @@ final class ActionRunner {
 
     // MARK: - Run az command helper
 
-    private func runAz(_ arguments: [String]) async throws -> ShellResult {
+    private func runAz(_ arguments: [String], actionId: UUID) async throws -> ShellResult {
+        try Task.checkCancellation()
         let start = Date()
         var entry = CommandLogEntry(command: "az", arguments: arguments)
 
-        let result = try await azCLI.shell.run(
-            executable: azCLI.azPath,
-            arguments: arguments
-        )
+        let result: ShellResult
+        do {
+            result = try await azCLI.shell.run(executable: azCLI.azPath, arguments: arguments)
+        } catch {
+            entry.stderr = error.localizedDescription
+            entry.duration = Date().timeIntervalSince(start)
+            if currentAction?.id == actionId { logCommand(entry) }
+            throw error
+        }
+        try Task.checkCancellation()
 
         entry.stdout = result.stdout
         entry.stderr = result.stderr
         entry.exitCode = result.exitCode
         entry.duration = Date().timeIntervalSince(start)
-        logCommand(entry)
+        if currentAction?.id == actionId { logCommand(entry) }
 
         return result
+    }
+
+    // MARK: - Tenant Discovery
+
+    private func executeDiscoverTenants(action: AzAction) async {
+        updatePhase("Fetching accessible tenants...")
+        do {
+            let tenants = try await azCLI.listTenants { [self] arguments in
+                try await runAz(arguments, actionId: action.id)
+            }
+            try Task.checkCancellation()
+            guard currentAction?.id == action.id else { return }
+            discoveredTenants = tenants
+            completeAction(phase: .succeeded)
+        } catch {
+            guard currentAction?.id == action.id else { return }
+            let message = "Tenant discovery failed: \(error.localizedDescription)"
+            tenantDiscoveryError = message
+            completeAction(phase: .failed(message))
+        }
+    }
+
+    private func executeAddTenants(action: AzAction, tenantIds: Set<String>) async {
+        updatePhase("Saving selected tenants...")
+        do {
+            try Task.checkCancellation()
+            guard let tenants = discoveredTenants, !tenantIds.isEmpty,
+                  tenantIds.isSubset(of: Set(tenants.map(\.tenantId))) else {
+                throw ConfigError.validationError("Select at least one discovered tenant")
+            }
+            let selected = tenants.filter { tenantIds.contains($0.tenantId) }.map {
+                TenantConfig(name: $0.name, tenantId: $0.tenantId, subscriptions: [])
+            }
+            config = try ConfigLoader.addTenants(selected, to: configPath)
+            configError = nil
+            discoveredTenants = nil
+            completeAction(phase: .succeeded)
+        } catch {
+            guard currentAction?.id == action.id else { return }
+            let message = "Could not add tenants: \(error.localizedDescription)"
+            tenantDiscoveryError = message
+            completeAction(phase: .failed(message))
+        }
     }
 
     private func authenticate(tenantId: String) async throws {
@@ -305,30 +410,7 @@ final class ActionRunner {
             // Non-fatal
         }
 
-        var pimIssues: [String] = []
-        if tenant.pim != nil && !tenant.subscriptions.isEmpty {
-            updatePhase("Discovering PIM roles...")
-            var allRoles: [PIMEligibleRole] = []
-            for sub in tenant.subscriptions {
-                do {
-                    var roles = try await pimService.discoverEligibleRoles(subscriptionId: sub.id)
-                    roles = await pimService.resolveRoleNames(for: roles, subscriptionId: sub.id)
-                    allRoles.append(contentsOf: roles)
-                } catch {
-                    pimIssues.append("PIM discovery failed for \(sub.name)")
-                }
-            }
-            tenantCaches[tenantId]!.eligiblePIMRoles = allRoles
-            var statuses: [String: PIMRoleStatusEntry] = [:]
-            for role in allRoles { statuses[role.id] = .idle() }
-            tenantCaches[tenantId]!.pimRoleStatuses = statuses
-        }
-
-        if pimIssues.isEmpty {
-            completeAction(phase: .succeeded)
-        } else {
-            completeAction(phase: .partialSuccess(pimIssues.joined(separator: "; ")))
-        }
+        completeAction(phase: .succeeded)
     }
 
     // MARK: - Login and Select Workflow
@@ -370,8 +452,49 @@ final class ActionRunner {
             tenantCaches[tenantId]!.signedInUser = user
         } catch { /* non-fatal */ }
 
-        // Skip PIM discovery for loginAndSelect — keep it focused
         completeAction(phase: .succeeded)
+    }
+
+    private func refreshPIMRoles(action: AzAction) async {
+        let tenantId = action.kind.tenantId
+        ensureCache(for: tenantId)
+        updatePhase("Discovering PIM roles...")
+        do {
+            guard azureContext.currentTenantId == tenantId else {
+                throw PIMError.discoveryFailed("Azure CLI is not active in the selected tenant")
+            }
+            guard let subscriptionId = azureContext.currentSubscriptionId else {
+                tenantCaches[tenantId]!.eligiblePIMRoles = []
+                tenantCaches[tenantId]!.pimRoleStatuses = [:]
+                tenantCaches[tenantId]!.pimDiscoveryError = nil
+                completeAction(phase: .succeeded)
+                return
+            }
+            var roles = try await pimService.discoverEligibleRoles(subscriptionId: subscriptionId) { [self] arguments in
+                try await runAz(arguments, actionId: action.id)
+            }
+            try Task.checkCancellation()
+            guard currentAction?.id == action.id else { return }
+            if !roles.isEmpty {
+                roles = await pimService.resolveRoleNames(for: roles, subscriptionId: subscriptionId)
+            }
+            try Task.checkCancellation()
+            guard currentAction?.id == action.id else { return }
+            let previousStatuses = tenantCaches[tenantId]!.pimRoleStatuses
+            tenantCaches[tenantId]!.eligiblePIMRoles = roles
+            var statuses: [String: PIMRoleStatusEntry] = [:]
+            for role in roles {
+                statuses[role.id] = previousStatuses[role.id] ?? .idle()
+            }
+            tenantCaches[tenantId]!.pimRoleStatuses = statuses
+            tenantCaches[tenantId]!.pimDiscoveryError = nil
+            completeAction(phase: .succeeded)
+        } catch {
+            guard !Task.isCancelled, currentAction?.id == action.id else { return }
+            let message = "Could not load PIM roles: \(error.localizedDescription)"
+            tenantCaches[tenantId]!.pimDiscoveryError = message
+            completeAction(phase: .partialSuccess(message))
+        }
     }
 
     // MARK: - Logout
@@ -504,18 +627,24 @@ final class ActionRunner {
             tenant.subscriptions.append(SubscriptionConfig(name: sub.name, id: sub.id))
         }
         currentConfig.tenants[idx] = tenant
-        config = currentConfig
-        ConfigLoader.saveConfig(currentConfig)
+        do {
+            try ConfigLoader.saveConfig(currentConfig, to: configPath)
+            config = currentConfig
+        } catch {
+            configError = error.localizedDescription
+        }
     }
 
     // MARK: - Azure Context Refresh
 
-    private func refreshAzureContext() async {
+    private func refreshAzureContext(actionId: UUID? = nil) async {
         do {
             let result = try await azCLI.shell.run(
                 executable: azCLI.azPath,
                 arguments: ["account", "show", "-o", "json"]
             )
+            guard !Task.isCancelled,
+                  actionId == nil || currentAction?.id == actionId else { return }
             if result.exitCode == 0, let data = result.stdout.data(using: .utf8) {
                 struct AccountShow: Codable {
                     let tenantId: String?
@@ -537,6 +666,8 @@ final class ActionRunner {
             }
             azureContext = .empty
         } catch {
+            guard !Task.isCancelled,
+                  actionId == nil || currentAction?.id == actionId else { return }
             azureContext = .empty
         }
     }
@@ -570,6 +701,16 @@ final class ActionRunner {
         tenantCaches[tenantId] ?? TenantCache()
     }
 
+    func pimRoles(for tenantId: String) -> [PIMEligibleRole] {
+        guard isActiveTenant(tenantId),
+              let subscriptionId = azureContext.currentSubscriptionId else { return [] }
+        let scope = "/subscriptions/\(subscriptionId.lowercased())"
+        return cache(for: tenantId).eligiblePIMRoles.filter {
+            let roleScope = $0.scope.lowercased()
+            return roleScope == scope || roleScope.hasPrefix(scope + "/")
+        }
+    }
+
     func isActiveTenant(_ tenantId: String) -> Bool {
         azureContext.currentTenantId == tenantId
     }
@@ -593,12 +734,12 @@ final class ActionRunner {
             azureContext: azureContext,
             savedAt: Date()
         )
-        state.save()
+        state.save(to: statePath)
     }
 
     /// Restore state from disk
     func restoreState() {
-        guard let state = PersistedState.load() else { return }
+        guard let state = PersistedState.load(from: statePath) else { return }
         tenantCaches = state.tenantCaches
         azureContext = state.azureContext
     }

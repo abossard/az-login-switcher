@@ -48,13 +48,19 @@ final class PIMService: Sendable {
         self.azPath = azPath ?? ShellExecutor.resolveAzPath() ?? "/opt/homebrew/bin/az"
     }
     
-    func discoverEligibleRoles(subscriptionId: String) async throws -> [PIMEligibleRole] {
+    func discoverEligibleRoles(
+        subscriptionId: String,
+        runCommand: (@Sendable ([String]) async throws -> ShellResult)? = nil
+    ) async throws -> [PIMEligibleRole] {
         let url = "https://management.azure.com/subscriptions/\(subscriptionId)/providers/Microsoft.Authorization/roleEligibilityScheduleInstances?api-version=2020-10-01&$filter=asTarget()"
         
-        let result = try await shell.run(
-            executable: azPath,
-            arguments: ["rest", "--method", "GET", "--url", url, "-o", "json"]
-        )
+        let arguments = ["rest", "--method", "GET", "--url", url, "-o", "json"]
+        let result: ShellResult
+        if let runCommand {
+            result = try await runCommand(arguments)
+        } else {
+            result = try await shell.run(executable: azPath, arguments: arguments)
+        }
         
         guard result.exitCode == 0 else {
             throw PIMError.discoveryFailed(result.stderr)
